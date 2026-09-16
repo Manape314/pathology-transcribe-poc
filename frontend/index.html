@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Pathology Dictation POC</title>
+
+  <!-- PWA hooks: theme colour for the browser chrome + the manifest that makes
+       the page installable to a phone home screen. -->
+  <meta name="theme-color" content="#0f766e" />
+  <link rel="manifest" href="manifest.json" />
+  <link rel="apple-touch-icon" href="icons/icon-192.png" />
+
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <main class="app">
+    <h1>Pathology Dictation</h1>
+    <p class="subtitle">Proof of concept — speech to text only</p>
+
+    <!-- The one control: press to start recording, press again to stop and send. -->
+    <button id="recordBtn" class="record-btn">Record</button>
+
+    <!-- Short status line: idle / recording / uploading / done / error. -->
+    <p id="status" class="status">Ready.</p>
+
+    <!-- Where the transcript from the backend is shown. -->
+    <section class="transcript" aria-live="polite">
+      <h2>Transcript</h2>
+      <p id="transcript" class="transcript-text">—</p>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+  <script>
+    // Register the service worker. This is what makes the app installable and
+    // lets it launch offline (the shell, not the transcription — that needs the
+    // server). Kept in an inline block so the whole PWA wiring is visible here.
+    if ("serviceWorker" in navigator) {
+      window.addEventListener("load", () => {
+        navigator.serviceWorker
+          .register("service-worker.js")
+          .catch((err) => console.warn("SW registration failed:", err));
+      });
+    }
+  </script>
+</body>
+</html>

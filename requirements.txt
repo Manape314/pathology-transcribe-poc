@@ -1,0 +1,10 @@
+# Web framework + ASGI server
+fastapi>=0.110
+uvicorn[standard]>=0.29
+
+# Required by FastAPI to parse multipart/form-data file uploads
+python-multipart>=0.0.9
+
+# Whisper inference via CTranslate2. Pulls in ctranslate2, tokenizers,
+# onnxruntime (used by the Silero VAD filter), and av (PyAV) for decoding.
+faster-whisper>=1.0.0
