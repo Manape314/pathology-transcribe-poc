@@ -14,9 +14,70 @@
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-  <main class="app">
+  <!-- Login screen — shown first. Gates everything below. -->
+  <main id="loginScreen" class="app screen">
     <h1>Pathology Dictation</h1>
-    <p class="subtitle">Proof of concept — speech to text only</p>
+    <p class="subtitle">Doctor sign in</p>
+
+    <form id="loginForm" class="auth-form">
+      <label for="loginHpcsa">HPCSA registration number</label>
+      <input id="loginHpcsa" type="text" autocomplete="username" required />
+
+      <label for="loginPassword">Password</label>
+      <input id="loginPassword" type="password" autocomplete="current-password" required />
+
+      <p id="loginError" class="error-msg" role="alert"></p>
+
+      <button type="submit" class="primary-btn">Log in</button>
+    </form>
+
+    <p class="switch-link">First time? <a href="#" id="showRegister">Register</a></p>
+  </main>
+
+  <!-- Registration screen — first-time doctors create a local profile. -->
+  <main id="registerScreen" class="app screen hidden">
+    <h1>Register</h1>
+    <p class="subtitle">Create your doctor profile on this device</p>
+
+    <form id="registerForm" class="auth-form">
+      <label for="regName">Full name</label>
+      <div class="prefix-input">
+        <span class="prefix">Dr.</span>
+        <input id="regName" type="text" placeholder="Jane Nkosi" required />
+      </div>
+
+      <label for="regHpcsa">HPCSA registration number</label>
+      <input id="regHpcsa" type="text" autocomplete="username" required />
+
+      <label for="regCell">Cellphone number</label>
+      <input id="regCell" type="tel" required />
+
+      <label for="regEmail">Email address</label>
+      <input id="regEmail" type="email" required />
+
+      <label for="regPassword">Password</label>
+      <input id="regPassword" type="password" autocomplete="new-password" required />
+
+      <label for="regPassword2">Confirm password</label>
+      <input id="regPassword2" type="password" autocomplete="new-password" required />
+
+      <p id="registerError" class="error-msg" role="alert"></p>
+
+      <button type="submit" class="primary-btn">Register</button>
+    </form>
+
+    <p class="switch-link">Already registered? <a href="#" id="showLogin">Log in</a></p>
+  </main>
+
+  <!-- Main app — the existing transcription flow, now gated behind login. -->
+  <main id="appScreen" class="app screen hidden">
+    <header class="app-header">
+      <div>
+        <h1>Pathology Dictation</h1>
+        <p class="subtitle" id="doctorGreeting">—</p>
+      </div>
+      <button id="logoutBtn" class="logout-btn" type="button">Log out</button>
+    </header>
 
     <!-- The one control: press to start recording, press again to stop and send. -->
     <button id="recordBtn" class="record-btn">Record</button>
@@ -29,8 +90,18 @@
       <h2>Transcript</h2>
       <p id="transcript" class="transcript-text">—</p>
     </section>
+
+    <!-- "Add to home screen" nudge, shown once after login/registration. -->
+    <div id="installPrompt" class="install-banner hidden">
+      <p id="installText" class="install-text"></p>
+      <div class="install-actions">
+        <button id="installBtn" class="install-btn hidden" type="button">Install app</button>
+        <button id="installDismiss" class="install-dismiss" type="button">Dismiss</button>
+      </div>
+    </div>
   </main>
 
+  <script src="auth.js"></script>
   <script src="app.js"></script>
   <script>
     // Register the service worker. This is what makes the app installable and

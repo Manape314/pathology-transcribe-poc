@@ -26,6 +26,10 @@ body {
   text-align: center;
 }
 
+.screen.hidden {
+  display: none;
+}
+
 h1 {
   margin: 0.25rem 0 0;
   font-size: 1.6rem;
@@ -35,6 +39,177 @@ h1 {
   margin: 0.25rem 0 2rem;
   color: var(--muted);
   font-size: 0.9rem;
+}
+
+/* ---- Login / register forms ---- */
+
+.auth-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  text-align: left;
+}
+
+.auth-form label {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text);
+  margin-top: 0.6rem;
+}
+
+.auth-form input {
+  padding: 0.65rem 0.75rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  font-size: 1rem;
+  font-family: inherit;
+}
+
+.auth-form input:focus {
+  outline: 2px solid var(--teal);
+  outline-offset: 1px;
+}
+
+.prefix-input {
+  display: flex;
+  align-items: center;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.prefix-input .prefix {
+  padding: 0.65rem 0 0.65rem 0.75rem;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.prefix-input input {
+  border: none;
+  flex: 1;
+}
+
+.prefix-input input:focus {
+  outline: none;
+}
+
+.primary-btn {
+  margin-top: 1.25rem;
+  padding: 0.75rem;
+  border: none;
+  border-radius: 8px;
+  background: var(--teal);
+  color: #fff;
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.primary-btn:hover {
+  background: var(--teal-dark);
+}
+
+.error-msg {
+  margin: 0.75rem 0 0;
+  color: var(--red);
+  font-size: 0.85rem;
+  min-height: 1em;
+}
+
+.switch-link {
+  margin-top: 1.5rem;
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+
+.switch-link a {
+  color: var(--teal);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.switch-link a:hover {
+  text-decoration: underline;
+}
+
+/* ---- App header (logged-in state) ---- */
+
+.app-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  text-align: left;
+  gap: 1rem;
+}
+
+.app-header .subtitle {
+  margin-bottom: 0;
+}
+
+.logout-btn {
+  flex-shrink: 0;
+  padding: 0.4rem 0.75rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #fff;
+  color: var(--text);
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.logout-btn:hover {
+  background: var(--bg);
+}
+
+/* ---- Install banner ---- */
+
+.install-banner {
+  margin-top: 1.5rem;
+  padding: 1rem;
+  background: var(--card);
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  text-align: left;
+}
+
+.install-text {
+  margin: 0 0 0.75rem;
+  font-size: 0.9rem;
+  color: var(--text);
+}
+
+.install-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.install-btn {
+  padding: 0.5rem 0.9rem;
+  border: none;
+  border-radius: 8px;
+  background: var(--teal);
+  color: #fff;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.install-btn:hover {
+  background: var(--teal-dark);
+}
+
+.install-dismiss {
+  padding: 0.5rem 0.9rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #fff;
+  color: var(--muted);
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.install-dismiss:hover {
+  background: var(--bg);
 }
 
 .record-btn {
