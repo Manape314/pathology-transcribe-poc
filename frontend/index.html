@@ -76,7 +76,11 @@
         <h1>Pathology Dictation</h1>
         <p class="subtitle" id="doctorGreeting">—</p>
       </div>
-      <button id="logoutBtn" class="logout-btn" type="button">Log out</button>
+      <nav class="app-nav">
+        <button id="historyNavBtn" class="nav-btn" type="button">History</button>
+        <button id="profileNavBtn" class="nav-btn" type="button">Profile</button>
+        <button id="logoutBtn" class="logout-btn" type="button">Log out</button>
+      </nav>
     </header>
 
     <!-- The one control: press to start recording, press again to stop and send. -->
@@ -99,6 +103,66 @@
         <button id="installDismiss" class="install-dismiss" type="button">Dismiss</button>
       </div>
     </div>
+  </main>
+
+  <!-- Profile screen — edit saved details and change password. -->
+  <main id="profileScreen" class="app screen hidden">
+    <header class="sub-header">
+      <button id="profileBackBtn" class="back-btn" type="button">&larr; Back</button>
+      <h1>Profile</h1>
+    </header>
+
+    <form id="profileForm" class="auth-form">
+      <label for="profileName">Full name</label>
+      <div class="prefix-input">
+        <span class="prefix">Dr.</span>
+        <input id="profileName" type="text" required />
+      </div>
+
+      <label for="profileHpcsa">HPCSA registration number</label>
+      <input id="profileHpcsa" type="text" disabled />
+
+      <label for="profileCell">Cellphone number</label>
+      <input id="profileCell" type="tel" required />
+
+      <label for="profileEmail">Email address</label>
+      <input id="profileEmail" type="email" required />
+
+      <p id="profileError" class="error-msg" role="alert"></p>
+      <p id="profileSuccess" class="success-msg" role="status"></p>
+
+      <button type="submit" class="primary-btn">Save changes</button>
+    </form>
+
+    <hr class="divider" />
+
+    <h2 class="section-title">Change password</h2>
+    <form id="passwordForm" class="auth-form">
+      <label for="currentPassword">Current password</label>
+      <input id="currentPassword" type="password" autocomplete="current-password" required />
+
+      <label for="newPassword">New password</label>
+      <input id="newPassword" type="password" autocomplete="new-password" required />
+
+      <label for="newPassword2">Confirm new password</label>
+      <input id="newPassword2" type="password" autocomplete="new-password" required />
+
+      <p id="passwordError" class="error-msg" role="alert"></p>
+      <p id="passwordSuccess" class="success-msg" role="status"></p>
+
+      <button type="submit" class="primary-btn">Update password</button>
+    </form>
+  </main>
+
+  <!-- History screen — past transcriptions for the logged-in doctor. -->
+  <main id="historyScreen" class="app screen hidden">
+    <header class="sub-header">
+      <button id="historyBackBtn" class="back-btn" type="button">&larr; Back</button>
+      <h1>History</h1>
+    </header>
+
+    <ul id="historyList" class="history-list"></ul>
+    <p id="historyEmpty" class="empty-msg hidden">No transcriptions yet.</p>
   </main>
 
   <script src="auth.js"></script>

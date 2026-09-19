@@ -26,7 +26,7 @@ body {
   text-align: center;
 }
 
-.screen.hidden {
+.hidden {
   display: none;
 }
 
@@ -146,6 +146,15 @@ h1 {
   margin-bottom: 0;
 }
 
+.app-nav {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  flex-shrink: 0;
+}
+
+.nav-btn,
 .logout-btn {
   flex-shrink: 0;
   padding: 0.4rem 0.75rem;
@@ -157,8 +166,115 @@ h1 {
   cursor: pointer;
 }
 
+.nav-btn:hover,
 .logout-btn:hover {
   background: var(--bg);
+}
+
+/* ---- Sub-screens (Profile, History) ---- */
+
+.sub-header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  text-align: left;
+  margin-bottom: 1.5rem;
+}
+
+.sub-header h1 {
+  margin: 0;
+  font-size: 1.3rem;
+}
+
+.back-btn {
+  border: none;
+  background: none;
+  color: var(--teal);
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 0.25rem 0;
+}
+
+.back-btn:hover {
+  text-decoration: underline;
+}
+
+.success-msg {
+  margin: 0.75rem 0 0;
+  color: #15803d;
+  font-size: 0.85rem;
+  min-height: 1em;
+}
+
+.divider {
+  margin: 2rem 0;
+  border: none;
+  border-top: 1px solid #e2e8f0;
+}
+
+.section-title {
+  margin: 0 0 1rem;
+  font-size: 1rem;
+  text-align: left;
+}
+
+/* ---- History list ---- */
+
+.history-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  text-align: left;
+}
+
+.history-item {
+  padding: 1rem;
+  background: var(--card);
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+}
+
+.history-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.5rem;
+}
+
+.history-timestamp {
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.history-delete {
+  flex-shrink: 0;
+  padding: 0.3rem 0.6rem;
+  border: 1px solid #fecaca;
+  border-radius: 6px;
+  background: #fff;
+  color: var(--red);
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.history-delete:hover {
+  background: #fef2f2;
+}
+
+.history-text {
+  margin: 0;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.empty-msg {
+  color: var(--muted);
+  font-size: 0.9rem;
 }
 
 /* ---- Install banner ---- */

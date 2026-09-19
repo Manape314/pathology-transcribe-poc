@@ -97,6 +97,9 @@ async function sendForTranscription(blob) {
 
     const data = await res.json();
     transcriptEl.textContent = data.text || "(no speech detected)";
+    if (data.text) {
+      addHistoryEntry(data.text);
+    }
     setStatus(
       `Done — detected ${data.language}, ${data.duration.toFixed(1)}s of audio.`
     );

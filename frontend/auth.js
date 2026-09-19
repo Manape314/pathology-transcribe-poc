@@ -6,12 +6,16 @@
 // ===========================================================================
 
 const DOCTOR_KEY_PREFIX = "pathdictate_doctor_";
+const HISTORY_KEY_PREFIX = "pathdictate_history_";
 const SESSION_KEY = "pathdictate_session";
 
 // Screens
 const loginScreen = document.getElementById("loginScreen");
 const registerScreen = document.getElementById("registerScreen");
 const appScreen = document.getElementById("appScreen");
+const profileScreen = document.getElementById("profileScreen");
+const historyScreen = document.getElementById("historyScreen");
+const ALL_SCREENS = [loginScreen, registerScreen, appScreen, profileScreen, historyScreen];
 
 // Login form
 const loginForm = document.getElementById("loginForm");
@@ -31,9 +35,34 @@ const regPassword2 = document.getElementById("regPassword2");
 const registerError = document.getElementById("registerError");
 const showLoginLink = document.getElementById("showLogin");
 
-// App header / logout
+// App header / nav / logout
 const doctorGreeting = document.getElementById("doctorGreeting");
 const logoutBtn = document.getElementById("logoutBtn");
+const profileNavBtn = document.getElementById("profileNavBtn");
+const historyNavBtn = document.getElementById("historyNavBtn");
+
+// Profile form
+const profileForm = document.getElementById("profileForm");
+const profileName = document.getElementById("profileName");
+const profileHpcsa = document.getElementById("profileHpcsa");
+const profileCell = document.getElementById("profileCell");
+const profileEmail = document.getElementById("profileEmail");
+const profileError = document.getElementById("profileError");
+const profileSuccess = document.getElementById("profileSuccess");
+const profileBackBtn = document.getElementById("profileBackBtn");
+
+// Change-password form
+const passwordForm = document.getElementById("passwordForm");
+const currentPasswordInput = document.getElementById("currentPassword");
+const newPasswordInput = document.getElementById("newPassword");
+const newPassword2Input = document.getElementById("newPassword2");
+const passwordError = document.getElementById("passwordError");
+const passwordSuccess = document.getElementById("passwordSuccess");
+
+// History screen
+const historyBackBtn = document.getElementById("historyBackBtn");
+const historyList = document.getElementById("historyList");
+const historyEmpty = document.getElementById("historyEmpty");
 
 function normalizeHpcsa(value) {
   return value.trim().toUpperCase();
@@ -82,9 +111,7 @@ function getSession() {
 }
 
 function showScreen(screen) {
-  [loginScreen, registerScreen, appScreen].forEach((s) =>
-    s.classList.toggle("hidden", s !== screen)
-  );
+  ALL_SCREENS.forEach((s) => s.classList.toggle("hidden", s !== screen));
 }
 
 function clearAuthErrors() {
@@ -266,6 +293,179 @@ installDismissBtn.addEventListener("click", () => {
   localStorage.setItem(INSTALL_DISMISSED_KEY, "1");
   hideInstallBanner();
 });
+
+// --- Profile editing ---------------------------------------------------------
+
+function openProfileScreen() {
+  const doctor = getDoctor(getSession());
+  if (!doctor) return;
+
+  profileError.textContent = "";
+  profileSuccess.textContent = "";
+  passwordError.textContent = "";
+  passwordSuccess.textContent = "";
+  passwordForm.reset();
+
+  profileName.value = doctor.name.replace(/^Dr\.\s*/, "");
+  profileHpcsa.value = doctor.hpcsa;
+  profileCell.value = doctor.cell;
+  profileEmail.value = doctor.email;
+
+  showScreen(profileScreen);
+}
+
+profileNavBtn.addEventListener("click", openProfileScreen);
+profileBackBtn.addEventListener("click", () => showScreen(appScreen));
+
+profileForm.addEventListener("submit", (e) => {
+  e.preventDefault();
+  profileError.textContent = "";
+  profileSuccess.textContent = "";
+
+  const name = profileName.value.trim();
+  const cell = profileCell.value.trim();
+  const email = profileEmail.value.trim();
+
+  if (!name || !cell || !email) {
+    profileError.textContent = "Please fill in all fields.";
+    return;
+  }
+
+  const doctor = getDoctor(getSession());
+  if (!doctor) return;
+
+  doctor.name = "Dr. " + name;
+  doctor.cell = cell;
+  doctor.email = email;
+  saveDoctor(doctor);
+
+  doctorGreeting.textContent = doctor.name;
+  profileSuccess.textContent = "Profile updated.";
+});
+
+passwordForm.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  passwordError.textContent = "";
+  passwordSuccess.textContent = "";
+
+  const doctor = getDoctor(getSession());
+  if (!doctor) return;
+
+  const currentPassword = currentPasswordInput.value;
+  const newPassword = newPasswordInput.value;
+  const newPassword2 = newPassword2Input.value;
+
+  const currentHash = await hashPassword(currentPassword, doctor.salt);
+  if (currentHash !== doctor.passwordHash) {
+    passwordError.textContent = "Current password is incorrect.";
+    return;
+  }
+
+  if (newPassword !== newPassword2) {
+    passwordError.textContent = "New passwords do not match.";
+    return;
+  }
+
+  const salt = randomSaltHex();
+  doctor.salt = salt;
+  doctor.passwordHash = await hashPassword(newPassword, salt);
+  saveDoctor(doctor);
+
+  passwordForm.reset();
+  passwordSuccess.textContent = "Password updated.";
+});
+
+// --- Transcription history ----------------------------------------------------
+
+function historyStorageKey(hpcsa) {
+  return HISTORY_KEY_PREFIX + normalizeHpcsa(hpcsa);
+}
+
+function getHistory(hpcsa) {
+  const raw = localStorage.getItem(historyStorageKey(hpcsa));
+  return raw ? JSON.parse(raw) : [];
+}
+
+function saveHistory(hpcsa, entries) {
+  localStorage.setItem(historyStorageKey(hpcsa), JSON.stringify(entries));
+}
+
+// Called by app.js after a successful transcription.
+function addHistoryEntry(text) {
+  const hpcsa = getSession();
+  if (!hpcsa || !text) return;
+
+  const entries = getHistory(hpcsa);
+  entries.unshift({
+    id: crypto.randomUUID ? crypto.randomUUID() : bufferToHex(crypto.getRandomValues(new Uint8Array(8)).buffer),
+    text,
+    timestamp: new Date().toISOString(),
+  });
+  saveHistory(hpcsa, entries);
+}
+
+function deleteHistoryEntry(id) {
+  const hpcsa = getSession();
+  if (!hpcsa) return;
+  saveHistory(hpcsa, getHistory(hpcsa).filter((entry) => entry.id !== id));
+  renderHistory();
+}
+
+function formatTimestamp(iso) {
+  return new Date(iso).toLocaleString(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  });
+}
+
+function renderHistory() {
+  const hpcsa = getSession();
+  const entries = hpcsa ? getHistory(hpcsa) : [];
+
+  historyList.innerHTML = "";
+  historyEmpty.classList.toggle("hidden", entries.length > 0);
+
+  entries.forEach((entry) => {
+    const item = document.createElement("li");
+    item.className = "history-item";
+
+    const meta = document.createElement("div");
+    meta.className = "history-meta";
+
+    const timestamp = document.createElement("span");
+    timestamp.className = "history-timestamp";
+    timestamp.textContent = formatTimestamp(entry.timestamp);
+
+    const deleteBtn = document.createElement("button");
+    deleteBtn.type = "button";
+    deleteBtn.className = "history-delete";
+    deleteBtn.textContent = "Delete";
+    deleteBtn.addEventListener("click", () => {
+      if (confirm("Delete this transcription from your history?")) {
+        deleteHistoryEntry(entry.id);
+      }
+    });
+
+    meta.appendChild(timestamp);
+    meta.appendChild(deleteBtn);
+
+    const text = document.createElement("p");
+    text.className = "history-text";
+    text.textContent = entry.text;
+
+    item.appendChild(meta);
+    item.appendChild(text);
+    historyList.appendChild(item);
+  });
+}
+
+function openHistoryScreen() {
+  renderHistory();
+  showScreen(historyScreen);
+}
+
+historyNavBtn.addEventListener("click", openHistoryScreen);
+historyBackBtn.addEventListener("click", () => showScreen(appScreen));
 
 // --- Resume session on load --------------------------------------------------
 

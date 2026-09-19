@@ -2,7 +2,7 @@
 // installable and opens offline. It does NOT cache /transcribe responses —
 // transcription always needs the live backend.
 
-const CACHE = "path-dictate-v2";
+const CACHE = "path-dictate-v3";
 const SHELL = [
   "./",
   "./index.html",
