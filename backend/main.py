@@ -20,6 +20,7 @@ from fastapi import FastAPI, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from faster_whisper import WhisperModel
 
+import field_extraction
 import matching
 
 # --------------------------------------------------------------------------- #
@@ -139,14 +140,20 @@ async def transcribe(file: UploadFile = File(...)):
 
         text = "".join(text_parts).strip()
 
-        # Matching is additive — a bug or edge case here must never break
-        # the transcription response, which is the core, already-working
-        # value of this endpoint.
+        # Both matching and field extraction are additive — a bug or edge
+        # case in either must never break the transcription response,
+        # which is the core, already-working value of this endpoint.
         try:
             matches = matching.find_matches(text)
         except Exception as exc:  # noqa: BLE001
             print(f"matching: find_matches failed ({exc})")
             matches = []
+
+        try:
+            structured = field_extraction.extract_fields(text)
+        except Exception as exc:  # noqa: BLE001
+            print(f"field_extraction: extract_fields failed ({exc})")
+            structured = {}
 
         return {
             "text": text,
@@ -154,6 +161,7 @@ async def transcribe(file: UploadFile = File(...)):
             "language": info.language,
             "duration": info.duration,
             "matches": matches,
+            "structured": structured,
         }
     finally:
         # Always clean up the temp file, even if transcription raises.

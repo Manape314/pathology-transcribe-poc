@@ -60,13 +60,26 @@ _LOINC_CHOICES: list[str] = []
 _LOINC_WORD_INDEX: dict[str, set[int]] = {}
 
 
+def _stem(word: str) -> str:
+    """Light plural-stripping so "culture" and "cultures" share an index
+    key — confirmed necessary: without it, a query for "blood culture"
+    found ZERO NHLS candidates (index only had "cultures") and fell through
+    to an unrelated LOINC synonym match instead. This is a prefilter only;
+    the real fuzzy scorer still has the final say, so a slightly
+    over-eager stem just means a few extra candidates get scored, not a
+    few extra false matches returned."""
+    if len(word) > 4 and word.endswith("s") and not word.endswith("ss"):
+        return word[:-1]
+    return word
+
+
 def _build_word_index(choices: list[str]) -> dict[str, set[int]]:
     index: dict[str, set[int]] = {}
     for i, text in enumerate(choices):
         for word in _WORD_RE.findall(text.lower()):
             if len(word) < 3 or word in _STOPWORDS:
                 continue
-            index.setdefault(word, set()).add(i)
+            index.setdefault(_stem(word), set()).add(i)
     return index
 
 
@@ -158,11 +171,17 @@ def _candidate_indices(phrase: str, word_index: dict[str, set[int]]) -> dict[int
     """
     indices: set[int] = set()
     for word in _WORD_RE.findall(phrase):
-        indices |= word_index.get(word, set())
+        indices |= word_index.get(_stem(word), set())
     return indices
 
 
 def _best_match(phrase, choices, word_index):
+    # Choices/index are built from lowercased text (_build_word_index); the
+    # scorer itself is also case-sensitive (confirmed: fuzz.ratio('Blood',
+    # 'blood') == 80, not 100) — callers may pass original-case text (e.g.
+    # terminology_normalize.py's raw "tests required" items), so normalize
+    # once here rather than relying on every caller to remember to.
+    phrase = phrase.lower()
     subset_indices = _candidate_indices(phrase, word_index)
     if not subset_indices:
         return None
@@ -170,6 +189,57 @@ def _best_match(phrase, choices, word_index):
     return process.extractOne(
         phrase, subset, scorer=_SCORER, score_cutoff=MIN_MATCH_SCORE
     )
+
+
+def best_single_match(phrase: str, min_score: float = 88.0) -> dict | None:
+    """
+    Single best NHLS-or-LOINC hit for one phrase, at a caller-chosen
+    (typically stricter) score threshold — used by
+    terminology_normalize.py to resolve one "tests required" item to one
+    canonical answer, as opposed to find_matches()'s browsable multi-match
+    suggestion list at the looser MIN_MATCH_SCORE.
+    """
+    if not _READY:
+        return None
+
+    best = None
+
+    # NHLS wins whenever it clears min_score at all — never overridden by a
+    # numerically higher LOINC score. Confirmed necessary: exploding all of
+    # LOINC's RELATEDNAMES2 into synonyms means a short query can land an
+    # exact-string 100% hit against an obscure, unrelated LOINC code (e.g.
+    # "Blood culture" hit a niche platelet-product FISH assay at 100%,
+    # purely because that code's synonym list happened to contain the
+    # literal string "Blood culture") — LOINC's synonym corpus is huge and
+    # noisy, NHLS's is small and locally curated, so for a single-answer
+    # field NHLS is the more trustworthy source whenever it's confident at
+    # all, even if LOINC's coincidental match scores higher.
+    nhls_hit = _best_match(phrase, _NHLS_CHOICES, _NHLS_WORD_INDEX)
+    if nhls_hit is not None:
+        _, score, idx = nhls_hit
+        if score >= min_score:
+            best = {
+                "source": "nhls",
+                "name": _NHLS_TESTS[idx]["test_name"],
+                "score": round(score, 1),
+            }
+
+    if best is not None:
+        return best
+
+    loinc_hit = _best_match(phrase, _LOINC_CHOICES, _LOINC_WORD_INDEX)
+    if loinc_hit is not None:
+        _, score, idx = loinc_hit
+        if score >= min_score:
+            synonym = _LOINC_SYNONYMS[idx]
+            test = _LOINC_TESTS[synonym["test_index"]]
+            best = {
+                "source": "loinc",
+                "name": test["long_common_name"],
+                "score": round(score, 1),
+            }
+
+    return best
 
 
 def find_matches(text: str) -> list[dict]:

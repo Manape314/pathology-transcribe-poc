@@ -29,7 +29,10 @@ no code changes (controlled by environment variables).
 ## Repo layout
 
 ```
-backend/       FastAPI app (main.py), matching.py, scripts/build_terminology_index.py
+backend/       FastAPI app (main.py), matching.py (NHLS/LOINC fuzzy suggestions),
+                field_extraction.py + terminology_normalize.py + datetime_normalize.py
+                (structured pathology-request parsing), scripts/build_terminology_index.py,
+                tests/
 frontend/      PWA — plain HTML/CSS/JS, no build step
 requirements.txt
 ```
@@ -137,6 +140,50 @@ NHLS entry just won't get picked.
 
 SNOMED CT is deliberately not wired up yet (see "Out of scope").
 
+### Structured field extraction (patient/dates/tests as named fields)
+
+`matching.py` above only produces a browsable list of "this phrase in the
+transcript might mean this test" suggestions (`matches`) — it never touches
+the transcript's structure. Separately, `backend/field_extraction.py`
+parses a dictated proforma transcript ("Patient name, X. Patient ID, Y.
+...") into named fields, returned in `/transcribe`'s `structured` object:
+
+- **Dates/times** (`date_of_birth`, `date_requested`/`time_requested`,
+  `date_collected`/`time_collected`) go through `datetime_normalize.py` —
+  fully deterministic (regex/lookup, no LLM), producing ISO 8601
+  (`YYYY-MM-DD` / 24h `HH:MM`). Anything not confidently parseable (an
+  ambiguous or malformed phrase, e.g. two different month names in the same
+  raw string) is reported as `status: "ambiguous"` with `value: null` and
+  the **raw spoken text preserved** — never silently guessed.
+- **`tests_required`** goes through `terminology_normalize.py`, which reuses
+  `matching.py`'s already-loaded NHLS/LOINC data (no duplicate terminology
+  system) via a matching order: curated abbreviation dictionary (FBC, CRP,
+  U&E, ...) → exact canonical match → fuzzy match at a stricter cutoff than
+  the general suggestion panel. Each item keeps both `raw` and `normalized`
+  values; anything that doesn't clear the confidence bar is `status:
+  "unmatched"` rather than guessed.
+- **Everything else** (patient/doctor names, patient ID, HPCSA number,
+  ward, hospital, specimen type/site, medication, priority) is **pure raw
+  passthrough** — terminology/fuzzy matching never touches identifiers or
+  names.
+- Text not claimed by any recognized field (e.g. a corrupted trailing
+  sentence from a speech-recognition glitch) is collected into
+  `unparsed_text` for clinician review, rather than being dropped or
+  attached to the wrong field.
+
+### Running the tests
+
+```bash
+pytest backend/tests -v
+```
+
+Covers date/time normalization, terminology normalization (including
+negative cases — fuzzy matching must not "correct" unrelated words into
+test names), field extraction, and one integration test that posts through
+the **real** `POST /transcribe` route with Whisper's recognition step
+stubbed (so it's fast/deterministic) but every line of the new
+extraction/normalization/matching code running for real.
+
 ## Frontend — serve it
 
 The frontend is static files; serve the `frontend/` folder with any static
@@ -199,12 +246,35 @@ Returns:
       "shortname": "CRP SerPl-mCnc",
       "score": 100.0
     }
-  ]
+  ],
+  "structured": {
+    "patient_name": { "raw": "Gabelo Mukwena", "value": "Gabelo Mukwena", "status": "extracted" },
+    "date_of_birth_raw": "1998-8-August 14th, 6 May",
+    "date_of_birth": null,
+    "date_of_birth_status": "ambiguous",
+    "date_requested_raw": "2026-22nd September",
+    "date_requested": "2026-09-22",
+    "date_requested_status": "confirmed",
+    "time_requested_raw": "25 minutes to 3 p.m",
+    "time_requested": "14:35",
+    "time_requested_status": "confirmed",
+    "tests_required_raw": "FBC, CRP, U and E. Blood culture",
+    "tests_required": [
+      { "raw": "FBC", "normalized": "Full Blood Count", "source": "abbreviation", "status": "confirmed" },
+      { "raw": "CRP", "normalized": "C-reactive protein", "source": "abbreviation", "status": "confirmed" },
+      { "raw": "U and E", "normalized": "Urea and Electrolytes", "source": "abbreviation", "status": "confirmed" }
+    ],
+    "unparsed_text": []
+  }
 }
 ```
 
 `matches` is always present; it's an empty array if terminology data hasn't
 been built (see "Terminology matching" above) or nothing matched.
+`structured` is always present too (an empty object `{}` if field
+extraction hit an unexpected error — it fails safe, same as `matches`); see
+"Structured field extraction" above for the full field list and what each
+status value means.
 
 ## Out of scope (deliberately)
 

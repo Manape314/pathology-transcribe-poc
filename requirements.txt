@@ -20,3 +20,6 @@ rapidfuzz>=3.6
 # must be run after the pip install step:
 #     python -m spacy download en_core_web_sm
 spacy>=3.7
+
+# Test suite (backend/tests/) — not needed to run the app itself.
+pytest>=8.0
