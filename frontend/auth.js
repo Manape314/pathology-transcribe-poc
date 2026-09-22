@@ -390,17 +390,36 @@ function saveHistory(hpcsa, entries) {
   localStorage.setItem(historyStorageKey(hpcsa), JSON.stringify(entries));
 }
 
-// Called by app.js after a successful transcription.
+// Called by app.js after a successful transcription. Returns the new
+// entry's id so app.js can later attach confirmed matches to this exact
+// entry, rather than assuming "the most recent one."
 function addHistoryEntry(text) {
   const hpcsa = getSession();
-  if (!hpcsa || !text) return;
+  if (!hpcsa || !text) return null;
+
+  const id = crypto.randomUUID
+    ? crypto.randomUUID()
+    : bufferToHex(crypto.getRandomValues(new Uint8Array(8)).buffer);
 
   const entries = getHistory(hpcsa);
-  entries.unshift({
-    id: crypto.randomUUID ? crypto.randomUUID() : bufferToHex(crypto.getRandomValues(new Uint8Array(8)).buffer),
-    text,
-    timestamp: new Date().toISOString(),
-  });
+  entries.unshift({ id, text, timestamp: new Date().toISOString() });
+  saveHistory(hpcsa, entries);
+  return id;
+}
+
+// Called by app.js once the doctor confirms which suggested matches to
+// keep. Old entries (and entries where matches were skipped) simply have
+// no "matches" key — see renderHistory's guard below.
+function confirmHistoryMatches(entryId, matches) {
+  const hpcsa = getSession();
+  if (!hpcsa || !entryId) return;
+
+  const entries = getHistory(hpcsa);
+  const entry = entries.find((e) => e.id === entryId);
+  if (!entry) return;
+
+  entry.matches = matches;
+  entry.matchesConfirmed = true;
   saveHistory(hpcsa, entries);
 }
 
@@ -455,6 +474,36 @@ function renderHistory() {
 
     item.appendChild(meta);
     item.appendChild(text);
+
+    // Old entries (and entries where matches were skipped) simply don't
+    // have a "matches" key — this guard is the entire backward-compat
+    // mechanism, no migration needed.
+    if (entry.matches && entry.matches.length) {
+      const matchesList = document.createElement("ul");
+      matchesList.className = "history-matches";
+
+      entry.matches.forEach((match) => {
+        const matchItem = document.createElement("li");
+        matchItem.className = "history-match-item";
+
+        const badge = document.createElement("span");
+        badge.className = "source-badge" + (match.source === "loinc" ? " loinc" : "");
+        badge.textContent = match.source === "loinc" ? "LOINC" : "NHLS";
+
+        const label = document.createElement("span");
+        label.textContent =
+          match.source === "loinc"
+            ? `${match.long_common_name} (${match.loinc_num})`
+            : `${match.test_name} — ${match.specimen_type}`;
+
+        matchItem.appendChild(badge);
+        matchItem.appendChild(label);
+        matchesList.appendChild(matchItem);
+      });
+
+      item.appendChild(matchesList);
+    }
+
     historyList.appendChild(item);
   });
 }

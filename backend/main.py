@@ -1,9 +1,10 @@
 """
 Pathology dictation POC — backend.
 
-One job: accept an uploaded audio file, run faster-whisper on it (on the SERVER),
-and return the transcribed text as JSON. Nothing else — no form extraction, no
-second model, no database, no patient identifiers.
+Accepts an uploaded audio file, runs faster-whisper on it (on the SERVER),
+and returns the transcribed text plus suggested NHLS/LOINC code matches
+(see matching.py) as JSON. No patient identifiers, no database — the server
+is stateless; confirmed matches are saved client-side only.
 
 Run it with:
     uvicorn main:app --host 0.0.0.0 --port 8000
@@ -18,6 +19,8 @@ import tempfile
 from fastapi import FastAPI, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from faster_whisper import WhisperModel
+
+import matching
 
 # --------------------------------------------------------------------------- #
 # Configuration (all overridable via environment variables)
@@ -86,6 +89,7 @@ def health():
         "model": WHISPER_MODEL,
         "device": DEVICE,
         "compute_type": COMPUTE_TYPE,
+        "terminology_loaded": matching._READY,
     }
 
 
@@ -133,11 +137,23 @@ async def transcribe(file: UploadFile = File(...)):
             )
             text_parts.append(seg.text)
 
+        text = "".join(text_parts).strip()
+
+        # Matching is additive — a bug or edge case here must never break
+        # the transcription response, which is the core, already-working
+        # value of this endpoint.
+        try:
+            matches = matching.find_matches(text)
+        except Exception as exc:  # noqa: BLE001
+            print(f"matching: find_matches failed ({exc})")
+            matches = []
+
         return {
-            "text": "".join(text_parts).strip(),
+            "text": text,
             "segments": seg_list,
             "language": info.language,
             "duration": info.duration,
+            "matches": matches,
         }
     finally:
         # Always clean up the temp file, even if transcription raises.

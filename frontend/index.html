@@ -73,7 +73,7 @@
   <main id="appScreen" class="app screen hidden">
     <header class="app-header">
       <div>
-        <h1>Pathology Dictation</h1>
+        <h1>Digital Pathology Request Form</h1>
         <p class="subtitle" id="doctorGreeting">—</p>
       </div>
       <nav class="app-nav">
@@ -93,6 +93,18 @@
     <section class="transcript" aria-live="polite">
       <h2>Transcript</h2>
       <p id="transcript" class="transcript-text">—</p>
+    </section>
+
+    <!-- Suggested NHLS/LOINC matches for the transcript, shown automatically
+         after every transcription for the doctor to review and confirm. -->
+    <section id="matchesSection" class="matches hidden" aria-live="polite">
+      <h2>Suggested tests</h2>
+      <ul id="matchesList" class="matches-list"></ul>
+      <p id="matchesEmpty" class="empty-msg hidden">No matching tests found.</p>
+      <div class="matches-actions">
+        <button id="confirmMatchesBtn" class="primary-btn" type="button">Confirm &amp; save</button>
+        <button id="skipMatchesBtn" class="nav-btn" type="button">Skip</button>
+      </div>
     </section>
 
     <!-- "Add to home screen" nudge, shown once after login/registration. -->

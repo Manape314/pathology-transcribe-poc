@@ -8,3 +8,15 @@ python-multipart>=0.0.9
 # Whisper inference via CTranslate2. Pulls in ctranslate2, tokenizers,
 # onnxruntime (used by the Silero VAD filter), and av (PyAV) for decoding.
 faster-whisper>=1.0.0
+
+# Fuzzy string matching of transcript candidate phrases against the
+# NHLS/LOINC controlled vocabularies (see backend/matching.py).
+rapidfuzz>=3.6
+
+# Lightweight NLP (tokenization + noun-phrase chunking) used to generate
+# candidate phrases from the raw transcript before fuzzy matching.
+# IMPORTANT: `pip install -r requirements.txt` only installs the spaCy
+# library. The actual language model is a separate one-time download that
+# must be run after the pip install step:
+#     python -m spacy download en_core_web_sm
+spacy>=3.7

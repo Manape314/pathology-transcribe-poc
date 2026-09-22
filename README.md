@@ -1,31 +1,35 @@
 # Pathology Dictation POC — Speech to Text
 
-A minimal proof of concept: a clinician records a spoken pathology request on a
-phone, the audio is sent to a server, [faster-whisper](https://github.com/SYSTRAN/faster-whisper)
-transcribes it, and the text comes back.
+A proof of concept: a clinician logs in, records a spoken pathology request on
+a phone, the audio is sent to a server, [faster-whisper](https://github.com/SYSTRAN/faster-whisper)
+transcribes it, and the text comes back along with suggested NHLS test /
+LOINC code matches for the clinician to review and confirm.
 
-**That is the entire scope.** No form-field extraction, no vocabulary matching
-(LOINC/SNOMED/NHLS), no patient identifiers, no database, no second model. Just
-audio in → text out, working end to end.
+No patient identifiers, no server-side database (the doctor's profile and
+history live in the browser's localStorage only), no SNOMED CT yet (see
+"Out of scope" below).
 
 ## Architecture
 
 ```
-  Phone / browser (PWA)                 Server
-  ┌────────────────────┐   POST audio   ┌─────────────────────────┐
-  │ MediaRecorder → Blob│ ─────────────► │ FastAPI  /transcribe    │
-  │ shows transcript    │ ◄───────────── │ faster-whisper (Whisper)│
-  └────────────────────┘   JSON {text}  └─────────────────────────┘
+  Phone / browser (PWA)                          Server
+  ┌───────────────────────┐   POST audio   ┌────────────────────────────┐
+  │ MediaRecorder → Blob   │ ─────────────► │ FastAPI  /transcribe       │
+  │ shows transcript +     │ ◄───────────── │  1. faster-whisper (Whisper)│
+  │ suggested test matches │  JSON {text,   │  2. matching.py: NHLS/LOINC │
+  │ doctor confirms        │   matches}     │     fuzzy-match candidates │
+  └───────────────────────┘                └────────────────────────────┘
 ```
 
-Whisper runs on the **server**, so the phone does no heavy work — it only
-records and displays. The same backend runs on a laptop CPU or a GPU machine
-with no code changes (controlled by environment variables).
+Whisper and the matching step both run on the **server**, so the phone does no
+heavy work — it only records, displays, and lets the doctor confirm/reject
+suggested matches. The same backend runs on a laptop CPU or a GPU machine with
+no code changes (controlled by environment variables).
 
 ## Repo layout
 
 ```
-backend/       FastAPI app (main.py)
+backend/       FastAPI app (main.py), matching.py, scripts/build_terminology_index.py
 frontend/      PWA — plain HTML/CSS/JS, no build step
 requirements.txt
 ```
@@ -50,12 +54,19 @@ python -m venv ../venv
 source ../venv/bin/activate        # Windows: ..\venv\Scripts\activate
 pip install -r ../requirements.txt
 
+# spaCy's language model is a separate download, not covered by pip install:
+python -m spacy download en_core_web_sm
+
 uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
-First start downloads the model weights (large-v3 is ~3 GB) and caches them,
-so the first run is slow. Open <http://localhost:8000/> to see a health/config
-readout confirming the model, device, and compute type.
+First start downloads the Whisper model weights (large-v3 is ~3 GB) and
+caches them, so the first run is slow. Open <http://localhost:8000/> to see a
+health/config readout confirming the model, device, compute type, and whether
+terminology matching data loaded (`terminology_loaded`).
+
+If you skip the terminology-matching setup below, transcription still works
+fine — `/transcribe` just returns an empty `matches` array.
 
 ### CPU vs GPU
 
@@ -88,6 +99,43 @@ WHISPER_MODEL=small uvicorn main:app --host 0.0.0.0 --port 8000
 common South African pathology terms (FBC, U&E, creatinine, CRP, HbA1c, EDTA
 tube, etc.). Whisper uses it as an `initial_prompt` to nudge spelling/word
 choice. Edit it freely — it biases, it does not restrict.
+
+### Terminology matching (NHLS + LOINC)
+
+After transcription, `backend/matching.py` extracts candidate phrases from
+the transcript (spaCy noun-chunking + n-grams) and fuzzy-matches them
+(rapidfuzz) against the NHLS test index and LOINC, returning ranked
+suggestions in `/transcribe`'s `matches` field for the doctor to confirm.
+
+This needs reference data that is **not** in the repo (large, and partly
+licensed — see below), and a one-time local build step:
+
+1. Place your own copy of the reference data in `Medical_Terminologies/` at
+   the repo root (gitignored):
+   - `GPQ0064v3.pdf` — the NHLS test handbook (or your local lab's
+     equivalent), containing a TEST NAME / SPECIMEN TYPE / SPECIAL
+     INSTRUCTIONS table.
+   - `Loinc_2.83/LoincTable/Loinc.csv` — a [LOINC](https://loinc.org) release
+     (LOINC is free to use with registration; redistributing the raw files
+     is against its license, which is why it isn't in this repo).
+   - Requires the `pdftotext` binary (poppler) on PATH.
+2. Run the build script once:
+   ```bash
+   python backend/scripts/build_terminology_index.py
+   ```
+   This writes small lookup files to `backend/data/` (also gitignored —
+   regenerate locally rather than committing). The backend loads only these
+   small files at startup, never the raw multi-GB sources.
+3. Restart the backend. `GET /` should now show `"terminology_loaded": true`.
+
+The NHLS PDF parser is **best-effort**: it's reconstructing a table from
+PDF text layout, and some entries (especially ones with wrapped, multi-line
+cells) come out with imperfect specimen/instructions text. This is an
+accepted limitation, not a bug to chase down — the doctor visually confirms
+every suggested match in the app before it's saved, so an occasional messy
+NHLS entry just won't get picked.
+
+SNOMED CT is deliberately not wired up yet (see "Out of scope").
 
 ## Frontend — serve it
 
@@ -131,11 +179,37 @@ Returns:
   "text": "full transcript",
   "segments": [{ "start": 0.0, "end": 3.2, "text": "..." }],
   "language": "en",
-  "duration": 3.2
+  "duration": 3.2,
+  "matches": [
+    {
+      "match_id": "nhls:C-reactive protein (CRP)",
+      "source": "nhls",
+      "candidate_phrase": "c-reactive protein",
+      "test_name": "C-reactive protein (CRP)",
+      "specimen_type": "5 mL clotted blood (yellow top tube)",
+      "instructions": "...",
+      "score": 81.0
+    },
+    {
+      "match_id": "loinc:1988-5",
+      "source": "loinc",
+      "candidate_phrase": "reactive protein",
+      "loinc_num": "1988-5",
+      "long_common_name": "C reactive protein [Mass/volume] in Serum or Plasma",
+      "shortname": "CRP SerPl-mCnc",
+      "score": 100.0
+    }
+  ]
 }
 ```
 
+`matches` is always present; it's an empty array if terminology data hasn't
+been built (see "Terminology matching" above) or nothing matched.
+
 ## Out of scope (deliberately)
 
-Form-field extraction, LOINC/SNOMED/NHLS matching, patient identifiers, storage.
-This POC exists only to prove the transcription path works.
+SNOMED CT matching, patient identifiers, server-side storage (all doctor
+profiles, history, and confirmed matches live in the browser's localStorage
+only — the server is stateless). NHLS test index and LOINC matching are now
+implemented; SNOMED CT is a planned fast-follow (its license and ~3.6GB size
+need more preprocessing than fit this pass).
