@@ -1,4 +1,4 @@
-from field_extraction import extract_fields
+from field_extraction import build_normalized_text, extract_fields
 
 TRANSCRIPT = (
     "Patient name, Gabelo Mukwena. Patient ID, 2026-00482. Date of birth, "
@@ -55,6 +55,36 @@ def test_full_example_transcript():
     assert result["department"]["value"] == "internal medicine"
     assert any("staphylococcus" in u for u in result["unparsed_text"])
     assert "staphylococcus" not in result["department"]["value"]
+
+
+def test_build_normalized_text_substitutes_confident_values():
+    structured = extract_fields(TRANSCRIPT)
+    normalized_text = build_normalized_text(structured)
+
+    # Abbreviations are expanded in the clinician-facing transcript.
+    assert (
+        "Tests required: Full Blood Count, C-reactive protein, "
+        "Urea and Electrolytes, Blood cultures" in normalized_text
+    )
+    assert "FBC" not in normalized_text
+    assert "CRP" not in normalized_text
+
+    # Confident date/time substitutions.
+    assert "Date requested: 2026-09-22" in normalized_text
+    assert "Time requested: 14:35" in normalized_text
+    assert "Date collected: 2026-09-22" in normalized_text
+    assert "Time collected: 14:40" in normalized_text
+
+    # Ambiguous DOB keeps its raw phrase, clearly flagged, never guessed.
+    assert "1998-8-August 14th, 6 May [unconfirmed" in normalized_text
+
+    # Identifiers/names pass through untouched.
+    assert "Patient name: Gabelo Mukwena" in normalized_text
+    assert "Requesting doctor: Dr. Tato Manapi" in normalized_text
+    assert "HPCSA number: 808080" in normalized_text
+
+    # The garbled trailing sentence is visible, not silently dropped.
+    assert "staphylococcus" in normalized_text
 
 
 def test_empty_transcript_returns_empty_structure():

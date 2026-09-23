@@ -32,6 +32,8 @@ def test_normalize_time_confirmed(raw, expected):
         "this morning",
         "later",
         "yesterday",
+        "10 minutes to 3",  # no am/pm — must NOT be guessed
+        "5 minutes past 3",  # no am/pm — must NOT be guessed
         "",
     ],
 )
@@ -50,6 +52,7 @@ def test_normalize_time_ambiguous(raw):
         ("22nd of September 2026", "2026-09-22"),
         ("2026-22nd September", "2026-09-22"),
         ("2026-09-22", "2026-09-22"),
+        ("17 January 2026", "2026-01-17"),
     ],
 )
 def test_normalize_date_confirmed(raw, expected):

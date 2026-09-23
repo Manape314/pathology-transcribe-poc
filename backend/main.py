@@ -2,9 +2,12 @@
 Pathology dictation POC — backend.
 
 Accepts an uploaded audio file, runs faster-whisper on it (on the SERVER),
-and returns the transcribed text plus suggested NHLS/LOINC code matches
-(see matching.py) as JSON. No patient identifiers, no database — the server
-is stateless; confirmed matches are saved client-side only.
+then runs field_extraction.py to turn the transcript into a structured
+pathology request (dates/times deterministically normalized via
+datetime_normalize.py, "tests required" resolved to canonical NHLS/LOINC
+names via terminology_normalize.py) and a clinician-facing reconstructed
+transcript. No patient identifiers, no database — the server is stateless;
+confirmed data is saved client-side only.
 
 Run it with:
     uvicorn main:app --host 0.0.0.0 --port 8000
@@ -138,29 +141,31 @@ async def transcribe(file: UploadFile = File(...)):
             )
             text_parts.append(seg.text)
 
-        text = "".join(text_parts).strip()
+        raw_text = "".join(text_parts).strip()
 
-        # Both matching and field extraction are additive — a bug or edge
-        # case in either must never break the transcription response,
-        # which is the core, already-working value of this endpoint.
+        # Field extraction (and, inside it, terminology/date-time
+        # normalization) is additive — a bug or edge case here must never
+        # break the transcription response, which is the core,
+        # already-working value of this endpoint. Falling back to the raw
+        # text keeps the response at least as useful, never less.
         try:
-            matches = matching.find_matches(text)
-        except Exception as exc:  # noqa: BLE001
-            print(f"matching: find_matches failed ({exc})")
-            matches = []
-
-        try:
-            structured = field_extraction.extract_fields(text)
+            structured = field_extraction.extract_fields(raw_text)
         except Exception as exc:  # noqa: BLE001
             print(f"field_extraction: extract_fields failed ({exc})")
             structured = {}
 
+        try:
+            normalized_text = field_extraction.build_normalized_text(structured)
+        except Exception as exc:  # noqa: BLE001
+            print(f"field_extraction: build_normalized_text failed ({exc})")
+            normalized_text = raw_text
+
         return {
-            "text": text,
+            "raw_text": raw_text,
+            "normalized_text": normalized_text or raw_text,
             "segments": seg_list,
             "language": info.language,
             "duration": info.duration,
-            "matches": matches,
             "structured": structured,
         }
     finally:

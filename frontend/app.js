@@ -11,19 +11,18 @@ const BACKEND_URL = "http://localhost:8000";
 const recordBtn = document.getElementById("recordBtn");
 const statusEl = document.getElementById("status");
 const transcriptEl = document.getElementById("transcript");
+const toggleRawBtn = document.getElementById("toggleRawBtn");
 
-const matchesSection = document.getElementById("matchesSection");
-const matchesList = document.getElementById("matchesList");
-const matchesEmpty = document.getElementById("matchesEmpty");
-const confirmMatchesBtn = document.getElementById("confirmMatchesBtn");
-const skipMatchesBtn = document.getElementById("skipMatchesBtn");
+const testsSection = document.getElementById("testsSection");
+const testsList = document.getElementById("testsList");
+const testsEmpty = document.getElementById("testsEmpty");
+const confirmTestsBtn = document.getElementById("confirmTestsBtn");
+const skipTestsBtn = document.getElementById("skipTestsBtn");
 
-let lastMatches = []; // the matches currently rendered in matchesSection
-
-// A match is checked by default only above this stricter threshold — the
-// MIN_MATCH_SCORE cutoff on the backend just decides what's worth showing
-// at all; this decides what's worth pre-accepting.
-const AUTO_ACCEPT_SCORE = 90;
+let lastTestsRequired = []; // the tests_required items currently rendered
+let currentNormalizedText = "";
+let currentRawText = "";
+let showingRaw = false;
 
 let mediaRecorder = null; // the active MediaRecorder, when recording
 let chunks = []; // audio Blob pieces collected during a recording
@@ -43,7 +42,8 @@ recordBtn.addEventListener("click", async () => {
 });
 
 async function startRecording() {
-  hideMatches();
+  hideTests();
+  resetTranscriptView();
 
   try {
     // Ask for mic access. This prompts the user the first time. It will REJECT
@@ -111,11 +111,18 @@ async function sendForTranscription(blob) {
     }
 
     const data = await res.json();
-    transcriptEl.textContent = data.text || "(no speech detected)";
 
-    const entryId = data.text ? addHistoryEntry(data.text) : null;
+    currentNormalizedText = data.normalized_text || data.raw_text || "";
+    currentRawText = data.raw_text || "";
+    showingRaw = false;
+    updateTranscriptView();
+
+    const structured = data.structured || {};
+    const entryId = currentNormalizedText
+      ? addHistoryEntry(currentNormalizedText, currentRawText)
+      : null;
     if (entryId) {
-      renderMatches(entryId, data.matches || []);
+      renderTests(entryId, structured.tests_required || []);
     }
 
     setStatus(
@@ -127,84 +134,114 @@ async function sendForTranscription(blob) {
   }
 }
 
-function hideMatches() {
-  matchesSection.classList.add("hidden");
-  matchesList.innerHTML = "";
-  lastMatches = [];
+function updateTranscriptView() {
+  transcriptEl.textContent =
+    (showingRaw ? currentRawText : currentNormalizedText) || "(no speech detected)";
+  toggleRawBtn.textContent = showingRaw
+    ? "View normalized transcript"
+    : "View raw transcript";
 }
 
-function renderMatches(entryId, matches) {
-  lastMatches = matches;
-  matchesSection.dataset.entryId = entryId;
-  matchesList.innerHTML = "";
-  matchesEmpty.classList.toggle("hidden", matches.length > 0);
+function resetTranscriptView() {
+  currentNormalizedText = "";
+  currentRawText = "";
+  showingRaw = false;
+  transcriptEl.textContent = "—";
+  toggleRawBtn.textContent = "View raw transcript";
+}
 
-  matches.forEach((match) => {
-    const item = document.createElement("li");
-    item.className = "match-item";
+toggleRawBtn.addEventListener("click", () => {
+  showingRaw = !showingRaw;
+  updateTranscriptView();
+});
 
-    const checkbox = document.createElement("input");
-    checkbox.type = "checkbox";
-    checkbox.dataset.matchId = match.match_id;
-    checkbox.checked = match.score >= AUTO_ACCEPT_SCORE;
+function hideTests() {
+  testsSection.classList.add("hidden");
+  testsList.innerHTML = "";
+  lastTestsRequired = [];
+}
+
+function renderTests(entryId, testsRequired) {
+  lastTestsRequired = testsRequired;
+  testsSection.dataset.entryId = entryId;
+  testsList.innerHTML = "";
+  testsEmpty.classList.toggle("hidden", testsRequired.length > 0);
+
+  testsRequired.forEach((item, index) => {
+    const el = document.createElement("li");
+    const isUnmatched = item.status !== "confirmed";
+    el.className = "match-item" + (isUnmatched ? " unmatched" : "");
+
+    if (!isUnmatched) {
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.dataset.testIndex = String(index);
+      // Every item that reaches here already cleared a real confidence
+      // bar (curated abbreviation, exact match, or strict fuzzy cutoff)
+      // in terminology_normalize.py, so all confirmed items start checked.
+      checkbox.checked = true;
+      el.appendChild(checkbox);
+    }
 
     const body = document.createElement("div");
     body.className = "match-body";
 
     const candidate = document.createElement("p");
     candidate.className = "match-candidate";
-    candidate.textContent = `Heard: "${match.candidate_phrase}"`;
-
-    const name = document.createElement("p");
-    name.className = "match-name";
-    name.textContent =
-      match.source === "loinc" ? match.long_common_name : match.test_name;
-
-    const meta = document.createElement("div");
-    meta.className = "match-meta";
-
-    const badge = document.createElement("span");
-    badge.className = "source-badge" + (match.source === "loinc" ? " loinc" : "");
-    badge.textContent = match.source === "loinc" ? "LOINC" : "NHLS";
-
-    const detail = document.createElement("span");
-    detail.textContent =
-      match.source === "loinc" ? match.loinc_num : match.specimen_type;
-
-    const score = document.createElement("span");
-    score.className = "match-score";
-    score.textContent = `${Math.round(match.score)}% match`;
-
-    meta.appendChild(badge);
-    meta.appendChild(detail);
-    meta.appendChild(score);
-
+    candidate.textContent = `Heard: "${item.raw}"`;
     body.appendChild(candidate);
-    body.appendChild(name);
-    body.appendChild(meta);
 
-    item.appendChild(checkbox);
-    item.appendChild(body);
-    matchesList.appendChild(item);
+    if (isUnmatched) {
+      const warning = document.createElement("p");
+      warning.className = "match-name";
+      warning.textContent = "Unrecognized — clinician confirmation required";
+      body.appendChild(warning);
+    } else {
+      const name = document.createElement("p");
+      name.className = "match-name";
+      name.textContent = item.normalized;
+      body.appendChild(name);
+
+      const meta = document.createElement("div");
+      meta.className = "match-meta";
+
+      const badge = document.createElement("span");
+      badge.className = "source-badge" + (item.source === "loinc" ? " loinc" : "");
+      badge.textContent =
+        item.source === "abbreviation" ? "ABBREV" : item.source === "loinc" ? "LOINC" : "NHLS";
+      meta.appendChild(badge);
+
+      if (typeof item.score === "number") {
+        const score = document.createElement("span");
+        score.className = "match-score";
+        score.textContent = `${Math.round(item.score)}% match`;
+        meta.appendChild(score);
+      }
+
+      body.appendChild(meta);
+    }
+
+    el.appendChild(body);
+    testsList.appendChild(el);
   });
 
-  matchesSection.classList.remove("hidden");
+  testsSection.classList.remove("hidden");
 }
 
-confirmMatchesBtn.addEventListener("click", () => {
-  const entryId = matchesSection.dataset.entryId;
-  const checkedIds = new Set(
-    Array.from(matchesList.querySelectorAll("input[type=checkbox]:checked")).map(
-      (cb) => cb.dataset.matchId
+confirmTestsBtn.addEventListener("click", () => {
+  const entryId = testsSection.dataset.entryId;
+  const checkedIndexes = new Set(
+    Array.from(testsList.querySelectorAll("input[type=checkbox]:checked")).map(
+      (cb) => Number(cb.dataset.testIndex)
     )
   );
-  const accepted = lastMatches.filter((m) => checkedIds.has(m.match_id));
+  const accepted = lastTestsRequired.filter((_, i) => checkedIndexes.has(i));
 
-  confirmHistoryMatches(entryId, accepted);
-  hideMatches();
-  setStatus(`Saved ${accepted.length} confirmed match(es) to history.`);
+  confirmHistoryTests(entryId, accepted);
+  hideTests();
+  setStatus(`Saved ${accepted.length} confirmed test(s) to history.`);
 });
 
-skipMatchesBtn.addEventListener("click", () => {
-  hideMatches();
+skipTestsBtn.addEventListener("click", () => {
+  hideTests();
 });

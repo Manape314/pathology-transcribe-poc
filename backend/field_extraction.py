@@ -183,3 +183,81 @@ def extract_fields(transcript: str) -> dict:
 
     result["unparsed_text"] = unparsed
     return result
+
+
+# --------------------------------------------------------------------------- #
+# Clinician-facing normalized transcript
+# --------------------------------------------------------------------------- #
+# Reconstructs a readable, structured summary from `structured` (the dict
+# extract_fields() returns) — same field order as the dictation proforma.
+# Confirmed date/time/test values are substituted in; anything ambiguous or
+# unmatched keeps its raw text with an explicit marker, never guessed.
+
+_DISPLAY_FIELDS = [
+    ("patient_name", "Patient name"),
+    ("patient_id", "Patient ID"),
+    ("date_of_birth", "Date of birth"),
+    ("ward", "Medical ward"),
+    ("hospital", "Hospital"),
+    ("date_requested", "Date requested"),
+    ("time_requested", "Time requested"),
+    ("priority", "Priority"),
+    ("specimen_type", "Specimen type"),
+    ("specimen_site", "Specimen site"),
+    ("date_collected", "Date collected"),
+    ("time_collected", "Time collected"),
+    ("clinical_history", "Clinical history"),
+    ("provisional_diagnosis", "Provisional diagnosis"),
+    ("tests_required", "Tests required"),
+    ("medication", "Relevant medication"),
+    ("requesting_doctor", "Requesting doctor"),
+    ("hpcsa_number", "HPCSA number"),
+    ("department", "Department"),
+]
+
+_DATE_TIME_DISPLAY_FIELDS = {
+    "date_of_birth", "date_requested", "time_requested",
+    "date_collected", "time_collected",
+}
+
+
+def _format_test_item(item: dict) -> str:
+    if item["status"] == "confirmed":
+        return item["normalized"]
+    return f"{item['raw']} [unrecognized]"
+
+
+def build_normalized_text(structured: dict) -> str:
+    lines: list[str] = []
+
+    for field_key, label in _DISPLAY_FIELDS:
+        if field_key == "tests_required":
+            items = structured.get("tests_required")
+            if items is None:
+                continue
+            value = ", ".join(_format_test_item(item) for item in items) or "—"
+            lines.append(f"{label}: {value}")
+            continue
+
+        if field_key in _DATE_TIME_DISPLAY_FIELDS:
+            if field_key not in structured:
+                continue
+            value = structured.get(field_key)
+            status = structured.get(f"{field_key}_status")
+            if status == "confirmed" and value:
+                lines.append(f"{label}: {value}")
+            else:
+                raw = structured.get(f"{field_key}_raw", "")
+                lines.append(f"{label}: {raw} [unconfirmed — please verify]")
+            continue
+
+        field = structured.get(field_key)
+        if field is None:
+            continue
+        lines.append(f"{label}: {field['value']}")
+
+    unparsed = structured.get("unparsed_text") or []
+    if unparsed:
+        lines.append("Unrecognized speech (please review): " + " / ".join(unparsed))
+
+    return "\n".join(lines)

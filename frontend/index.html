@@ -89,21 +89,26 @@
     <!-- Short status line: idle / recording / uploading / done / error. -->
     <p id="status" class="status">Ready.</p>
 
-    <!-- Where the transcript from the backend is shown. -->
+    <!-- Where the normalized (clinician-facing) transcript is shown, with
+         a toggle to view the untouched raw Whisper output instead. -->
     <section class="transcript" aria-live="polite">
-      <h2>Transcript</h2>
+      <div class="transcript-header">
+        <h2>Transcript</h2>
+        <button id="toggleRawBtn" class="nav-btn" type="button">View raw transcript</button>
+      </div>
       <p id="transcript" class="transcript-text">—</p>
     </section>
 
-    <!-- Suggested NHLS/LOINC matches for the transcript, shown automatically
-         after every transcription for the doctor to review and confirm. -->
-    <section id="matchesSection" class="matches hidden" aria-live="polite">
-      <h2>Suggested tests</h2>
-      <ul id="matchesList" class="matches-list"></ul>
-      <p id="matchesEmpty" class="empty-msg hidden">No matching tests found.</p>
+    <!-- Tests required, extracted from the transcript and normalized to
+         canonical NHLS/LOINC names, shown automatically after every
+         transcription for the doctor to review and confirm. -->
+    <section id="testsSection" class="matches hidden" aria-live="polite">
+      <h2>Tests required</h2>
+      <ul id="testsList" class="matches-list"></ul>
+      <p id="testsEmpty" class="empty-msg hidden">No tests required were recognized.</p>
       <div class="matches-actions">
-        <button id="confirmMatchesBtn" class="primary-btn" type="button">Confirm &amp; save</button>
-        <button id="skipMatchesBtn" class="nav-btn" type="button">Skip</button>
+        <button id="confirmTestsBtn" class="primary-btn" type="button">Confirm &amp; save</button>
+        <button id="skipTestsBtn" class="nav-btn" type="button">Skip</button>
       </div>
     </section>
 

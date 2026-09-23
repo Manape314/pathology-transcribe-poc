@@ -390,10 +390,13 @@ function saveHistory(hpcsa, entries) {
   localStorage.setItem(historyStorageKey(hpcsa), JSON.stringify(entries));
 }
 
-// Called by app.js after a successful transcription. Returns the new
-// entry's id so app.js can later attach confirmed matches to this exact
-// entry, rather than assuming "the most recent one."
-function addHistoryEntry(text) {
+// Called by app.js after a successful transcription. `text` is the
+// clinician-facing normalized transcript (what's displayed by default and
+// what's shown in History); `rawText` is the untouched Whisper output,
+// kept for traceability. Returns the new entry's id so app.js can later
+// attach confirmed tests to this exact entry, rather than assuming "the
+// most recent one."
+function addHistoryEntry(text, rawText) {
   const hpcsa = getSession();
   if (!hpcsa || !text) return null;
 
@@ -402,15 +405,20 @@ function addHistoryEntry(text) {
     : bufferToHex(crypto.getRandomValues(new Uint8Array(8)).buffer);
 
   const entries = getHistory(hpcsa);
-  entries.unshift({ id, text, timestamp: new Date().toISOString() });
+  entries.unshift({
+    id,
+    text,
+    rawText: rawText || "",
+    timestamp: new Date().toISOString(),
+  });
   saveHistory(hpcsa, entries);
   return id;
 }
 
-// Called by app.js once the doctor confirms which suggested matches to
-// keep. Old entries (and entries where matches were skipped) simply have
-// no "matches" key — see renderHistory's guard below.
-function confirmHistoryMatches(entryId, matches) {
+// Called by app.js once the doctor confirms which required tests to keep.
+// Old entries (and entries where confirmation was skipped) simply have no
+// "testsRequired" key — see renderHistory's guard below.
+function confirmHistoryTests(entryId, tests) {
   const hpcsa = getSession();
   if (!hpcsa || !entryId) return;
 
@@ -418,8 +426,8 @@ function confirmHistoryMatches(entryId, matches) {
   const entry = entries.find((e) => e.id === entryId);
   if (!entry) return;
 
-  entry.matches = matches;
-  entry.matchesConfirmed = true;
+  entry.testsRequired = tests;
+  entry.testsConfirmed = true;
   saveHistory(hpcsa, entries);
 }
 
@@ -475,33 +483,31 @@ function renderHistory() {
     item.appendChild(meta);
     item.appendChild(text);
 
-    // Old entries (and entries where matches were skipped) simply don't
-    // have a "matches" key — this guard is the entire backward-compat
-    // mechanism, no migration needed.
-    if (entry.matches && entry.matches.length) {
-      const matchesList = document.createElement("ul");
-      matchesList.className = "history-matches";
+    // Old entries (and entries where confirmation was skipped) simply
+    // don't have a "testsRequired" key — this guard is the entire
+    // backward-compat mechanism, no migration needed.
+    if (entry.testsRequired && entry.testsRequired.length) {
+      const testsList = document.createElement("ul");
+      testsList.className = "history-matches";
 
-      entry.matches.forEach((match) => {
-        const matchItem = document.createElement("li");
-        matchItem.className = "history-match-item";
+      entry.testsRequired.forEach((test) => {
+        const testItem = document.createElement("li");
+        testItem.className = "history-match-item";
 
         const badge = document.createElement("span");
-        badge.className = "source-badge" + (match.source === "loinc" ? " loinc" : "");
-        badge.textContent = match.source === "loinc" ? "LOINC" : "NHLS";
+        badge.className = "source-badge" + (test.source === "loinc" ? " loinc" : "");
+        badge.textContent =
+          test.source === "abbreviation" ? "ABBREV" : test.source === "loinc" ? "LOINC" : "NHLS";
 
         const label = document.createElement("span");
-        label.textContent =
-          match.source === "loinc"
-            ? `${match.long_common_name} (${match.loinc_num})`
-            : `${match.test_name} — ${match.specimen_type}`;
+        label.textContent = test.normalized;
 
-        matchItem.appendChild(badge);
-        matchItem.appendChild(label);
-        matchesList.appendChild(matchItem);
+        testItem.appendChild(badge);
+        testItem.appendChild(label);
+        testsList.appendChild(testItem);
       });
 
-      item.appendChild(matchesList);
+      item.appendChild(testsList);
     }
 
     historyList.appendChild(item);

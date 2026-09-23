@@ -2,8 +2,10 @@
 
 A proof of concept: a clinician logs in, records a spoken pathology request on
 a phone, the audio is sent to a server, [faster-whisper](https://github.com/SYSTRAN/faster-whisper)
-transcribes it, and the text comes back along with suggested NHLS test /
-LOINC code matches for the clinician to review and confirm.
+transcribes it, and a clinician-facing **normalized transcript** comes back —
+dates/times converted to unambiguous values, test abbreviations (FBC, CRP,
+U&E, ...) expanded to their canonical names — for the clinician to review and
+confirm. The untouched raw transcript is always kept alongside it.
 
 No patient identifiers, no server-side database (the doctor's profile and
 history live in the browser's localStorage only), no SNOMED CT yet (see
@@ -12,19 +14,22 @@ history live in the browser's localStorage only), no SNOMED CT yet (see
 ## Architecture
 
 ```
-  Phone / browser (PWA)                          Server
-  ┌───────────────────────┐   POST audio   ┌────────────────────────────┐
-  │ MediaRecorder → Blob   │ ─────────────► │ FastAPI  /transcribe       │
-  │ shows transcript +     │ ◄───────────── │  1. faster-whisper (Whisper)│
-  │ suggested test matches │  JSON {text,   │  2. matching.py: NHLS/LOINC │
-  │ doctor confirms        │   matches}     │     fuzzy-match candidates │
-  └───────────────────────┘                └────────────────────────────┘
+  Phone / browser (PWA)                            Server
+  ┌────────────────────────┐   POST audio   ┌───────────────────────────────┐
+  │ MediaRecorder → Blob    │ ─────────────► │ FastAPI  /transcribe          │
+  │ shows normalized        │ ◄───────────── │  1. faster-whisper (Whisper)  │
+  │ transcript (raw         │  JSON {         │  2. field_extraction.py:      │
+  │ available via toggle) + │   raw_text,     │     proforma → named fields   │
+  │ tests-required list,    │   normalized_   │  3. datetime_normalize.py +   │
+  │ doctor confirms         │   text,         │     terminology_normalize.py: │
+  │                         │   structured}   │     per-field normalization   │
+  └────────────────────────┘                 └───────────────────────────────┘
 ```
 
-Whisper and the matching step both run on the **server**, so the phone does no
-heavy work — it only records, displays, and lets the doctor confirm/reject
-suggested matches. The same backend runs on a laptop CPU or a GPU machine with
-no code changes (controlled by environment variables).
+Whisper and the normalization pipeline both run on the **server**, so the
+phone does no heavy work — it only records, displays, and lets the doctor
+confirm/reject the extracted tests. The same backend runs on a laptop CPU or
+a GPU machine with no code changes (controlled by environment variables).
 
 ## Repo layout
 
@@ -57,9 +62,6 @@ python -m venv ../venv
 source ../venv/bin/activate        # Windows: ..\venv\Scripts\activate
 pip install -r ../requirements.txt
 
-# spaCy's language model is a separate download, not covered by pip install:
-python -m spacy download en_core_web_sm
-
 uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
@@ -68,8 +70,9 @@ caches them, so the first run is slow. Open <http://localhost:8000/> to see a
 health/config readout confirming the model, device, compute type, and whether
 terminology matching data loaded (`terminology_loaded`).
 
-If you skip the terminology-matching setup below, transcription still works
-fine — `/transcribe` just returns an empty `matches` array.
+If you skip the terminology-matching setup below, transcription and field
+extraction still work fine — `tests_required` items just come back with
+`status: "unmatched"` instead of a canonical name.
 
 ### CPU vs GPU
 
@@ -105,10 +108,16 @@ choice. Edit it freely — it biases, it does not restrict.
 
 ### Terminology matching (NHLS + LOINC)
 
-After transcription, `backend/matching.py` extracts candidate phrases from
-the transcript (spaCy noun-chunking + n-grams) and fuzzy-matches them
-(rapidfuzz) against the NHLS test index and LOINC, returning ranked
-suggestions in `/transcribe`'s `matches` field for the doctor to confirm.
+`backend/matching.py` loads the NHLS test index and LOINC once at startup
+and exposes `best_single_match()`: fuzzy-matching (rapidfuzz) a single
+phrase against both, at a caller-chosen confidence threshold. It's called
+by `terminology_normalize.py` to resolve each individual item **already
+extracted from the "tests required" field** (see "Structured field
+extraction" below) — never over the whole transcript. An earlier version
+of this module also ran fuzzy matching over the entire raw transcript to
+produce a browsable suggestion list; that was removed because it couldn't
+tell prose apart from an actual test name and regularly suggested
+unrelated LOINC codes from ordinary sentence fragments.
 
 This needs reference data that is **not** in the repo (large, and partly
 licensed — see below), and a one-time local build step:
@@ -140,28 +149,27 @@ NHLS entry just won't get picked.
 
 SNOMED CT is deliberately not wired up yet (see "Out of scope").
 
-### Structured field extraction (patient/dates/tests as named fields)
+### Structured field extraction, and the normalized transcript
 
-`matching.py` above only produces a browsable list of "this phrase in the
-transcript might mean this test" suggestions (`matches`) — it never touches
-the transcript's structure. Separately, `backend/field_extraction.py`
-parses a dictated proforma transcript ("Patient name, X. Patient ID, Y.
-...") into named fields, returned in `/transcribe`'s `structured` object:
+`backend/field_extraction.py` parses a dictated proforma transcript
+("Patient name, X. Patient ID, Y. ...") into named fields, returned in
+`/transcribe`'s `structured` object:
 
 - **Dates/times** (`date_of_birth`, `date_requested`/`time_requested`,
   `date_collected`/`time_collected`) go through `datetime_normalize.py` —
   fully deterministic (regex/lookup, no LLM), producing ISO 8601
   (`YYYY-MM-DD` / 24h `HH:MM`). Anything not confidently parseable (an
   ambiguous or malformed phrase, e.g. two different month names in the same
-  raw string) is reported as `status: "ambiguous"` with `value: null` and
-  the **raw spoken text preserved** — never silently guessed.
+  raw string, or a time with no am/pm) is reported as `status: "ambiguous"`
+  with `value: null` and the **raw spoken text preserved** — never silently
+  guessed.
 - **`tests_required`** goes through `terminology_normalize.py`, which reuses
   `matching.py`'s already-loaded NHLS/LOINC data (no duplicate terminology
   system) via a matching order: curated abbreviation dictionary (FBC, CRP,
-  U&E, ...) → exact canonical match → fuzzy match at a stricter cutoff than
-  the general suggestion panel. Each item keeps both `raw` and `normalized`
-  values; anything that doesn't clear the confidence bar is `status:
-  "unmatched"` rather than guessed.
+  U&E, ...) → exact canonical match → fuzzy match via `matching.
+  best_single_match()` at a stricter cutoff than a generic search. Each item
+  keeps both `raw` and `normalized` values; anything that doesn't clear the
+  confidence bar is `status: "unmatched"` rather than guessed.
 - **Everything else** (patient/doctor names, patient ID, HPCSA number,
   ward, hospital, specimen type/site, medication, priority) is **pure raw
   passthrough** — terminology/fuzzy matching never touches identifiers or
@@ -171,6 +179,15 @@ parses a dictated proforma transcript ("Patient name, X. Patient ID, Y.
   `unparsed_text` for clinician review, rather than being dropped or
   attached to the wrong field.
 
+`field_extraction.build_normalized_text()` then reconstructs a clinician-
+readable transcript from `structured`: one `"Label: value"` line per field
+that was actually dictated, substituting confident date/time/test values,
+and showing `"{raw} [unconfirmed — please verify]"` / `"{raw}
+[unrecognized]"` for anything ambiguous or unmatched. This — not the raw
+Whisper output — is what `/transcribe` returns as `normalized_text` and
+what the PWA shows by default; `raw_text` is always included too and stays
+one click away behind the "View raw transcript" toggle.
+
 ### Running the tests
 
 ```bash
@@ -179,10 +196,12 @@ pytest backend/tests -v
 
 Covers date/time normalization, terminology normalization (including
 negative cases — fuzzy matching must not "correct" unrelated words into
-test names), field extraction, and one integration test that posts through
-the **real** `POST /transcribe` route with Whisper's recognition step
-stubbed (so it's fast/deterministic) but every line of the new
-extraction/normalization/matching code running for real.
+test names), field extraction and normalized-transcript construction, and
+integration tests that post through the **real** `POST /transcribe` route
+with Whisper's recognition step stubbed (so it's fast/deterministic) but
+every line of the extraction/normalization/matching code running for real
+— including a regression test confirming a decoy phrase embedded in prose
+(e.g. "urea analysis urine microscopy") never surfaces as a suggested test.
 
 ## Frontend — serve it
 
@@ -223,30 +242,11 @@ Returns:
 
 ```json
 {
-  "text": "full transcript",
+  "raw_text": "Patient name, Gabelo Mukwena. ... Tests required, FBC, CRP, U and E. ...",
+  "normalized_text": "Patient name: Gabelo Mukwena\n...\nTests required: Full Blood Count, C-reactive protein, Urea and Electrolytes\n...",
   "segments": [{ "start": 0.0, "end": 3.2, "text": "..." }],
   "language": "en",
   "duration": 3.2,
-  "matches": [
-    {
-      "match_id": "nhls:C-reactive protein (CRP)",
-      "source": "nhls",
-      "candidate_phrase": "c-reactive protein",
-      "test_name": "C-reactive protein (CRP)",
-      "specimen_type": "5 mL clotted blood (yellow top tube)",
-      "instructions": "...",
-      "score": 81.0
-    },
-    {
-      "match_id": "loinc:1988-5",
-      "source": "loinc",
-      "candidate_phrase": "reactive protein",
-      "loinc_num": "1988-5",
-      "long_common_name": "C reactive protein [Mass/volume] in Serum or Plasma",
-      "shortname": "CRP SerPl-mCnc",
-      "score": 100.0
-    }
-  ],
   "structured": {
     "patient_name": { "raw": "Gabelo Mukwena", "value": "Gabelo Mukwena", "status": "extracted" },
     "date_of_birth_raw": "1998-8-August 14th, 6 May",
@@ -269,17 +269,17 @@ Returns:
 }
 ```
 
-`matches` is always present; it's an empty array if terminology data hasn't
-been built (see "Terminology matching" above) or nothing matched.
-`structured` is always present too (an empty object `{}` if field
-extraction hit an unexpected error — it fails safe, same as `matches`); see
-"Structured field extraction" above for the full field list and what each
-status value means.
+`raw_text` is the untouched Whisper output; `normalized_text` is the
+clinician-facing reconstructed transcript (what the PWA shows by default).
+`structured` is always present (an empty object `{}` if field extraction
+hit an unexpected error — it fails safe, falling back to `raw_text` for
+`normalized_text` too); see "Structured field extraction" above for the
+full field list and what each status value means.
 
 ## Out of scope (deliberately)
 
 SNOMED CT matching, patient identifiers, server-side storage (all doctor
-profiles, history, and confirmed matches live in the browser's localStorage
+profiles, history, and confirmed tests live in the browser's localStorage
 only — the server is stateless). NHLS test index and LOINC matching are now
 implemented; SNOMED CT is a planned fast-follow (its license and ~3.6GB size
 need more preprocessing than fit this pass).
