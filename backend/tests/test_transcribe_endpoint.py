@@ -67,15 +67,13 @@ def test_transcribe_endpoint_raw_vs_normalized_and_structured(monkeypatch):
     assert "matches" not in data
     assert "text" not in data
 
-    # normalized_text has real substitutions — abbreviations expanded,
-    # confident date/time values swapped in — and never contains the bare
-    # abbreviation tokens once they've been confidently normalized.
+    # normalized_text has real substitutions — abbreviations expanded, with
+    # the originally-spoken form kept visible in brackets — and confident
+    # date/time values swapped in.
     normalized_text = data["normalized_text"]
-    assert "Full Blood Count" in normalized_text
-    assert "C-reactive protein" in normalized_text
-    assert "Urea and Electrolytes" in normalized_text
-    assert "FBC" not in normalized_text
-    assert "CRP" not in normalized_text
+    assert "Full Blood Count (FBC)" in normalized_text
+    assert "C-reactive protein (CRP)" in normalized_text
+    assert "Urea and Electrolytes (U and E)" in normalized_text
     assert "2026-09-22" in normalized_text
     assert "14:35" in normalized_text
 

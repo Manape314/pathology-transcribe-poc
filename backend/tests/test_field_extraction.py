@@ -61,13 +61,13 @@ def test_build_normalized_text_substitutes_confident_values():
     structured = extract_fields(TRANSCRIPT)
     normalized_text = build_normalized_text(structured)
 
-    # Abbreviations are expanded in the clinician-facing transcript.
+    # Abbreviations are expanded, with the originally-spoken form kept
+    # visible alongside the expansion.
     assert (
-        "Tests required: Full Blood Count, C-reactive protein, "
-        "Urea and Electrolytes, Blood cultures" in normalized_text
+        "Tests required: Full Blood Count (FBC), C-reactive protein (CRP), "
+        "Urea and Electrolytes (U and E), Blood cultures (Blood culture)"
+        in normalized_text
     )
-    assert "FBC" not in normalized_text
-    assert "CRP" not in normalized_text
 
     # Confident date/time substitutions.
     assert "Date requested: 2026-09-22" in normalized_text

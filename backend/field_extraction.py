@@ -223,6 +223,12 @@ _DATE_TIME_DISPLAY_FIELDS = {
 
 def _format_test_item(item: dict) -> str:
     if item["status"] == "confirmed":
+        # Keep the originally-spoken form visible alongside its expansion
+        # (e.g. "Full Blood Count (FBC)") — but skip the bracket when the
+        # doctor already said the full name, so it doesn't read as
+        # "Full Blood Count (Full Blood Count)".
+        if item["raw"].strip().lower() != item["normalized"].strip().lower():
+            return f"{item['normalized']} ({item['raw']})"
         return item["normalized"]
     return f"{item['raw']} [unrecognized]"
 
