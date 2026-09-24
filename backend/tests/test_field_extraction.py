@@ -87,6 +87,39 @@ def test_build_normalized_text_substitutes_confident_values():
     assert "staphylococcus" in normalized_text
 
 
+def test_context_threading_changes_ambiguous_candidate_ranking_not_status():
+    # Proves context actually flows from clinical_history into
+    # tests_required's ambiguity ranking (via extract_fields' two-pass
+    # restructure), not just that the ranking code exists in isolation —
+    # and that it NEVER changes "ambiguous" into "confirmed", regardless
+    # of how one-sided the supporting context is.
+    cough_transcript = (
+        "Clinical history, patient has chronic cough and chest pain. "
+        "Tests required, TB."
+    )
+    liver_transcript = (
+        "Clinical history, deranged LFT with jaundice, likely hepatic cause. "
+        "Tests required, TB."
+    )
+
+    cough_result = extract_fields(cough_transcript)
+    liver_result = extract_fields(liver_transcript)
+
+    cough_tb = cough_result["tests_required"][0]
+    liver_tb = liver_result["tests_required"][0]
+
+    assert cough_tb["status"] == "ambiguous"
+    assert liver_tb["status"] == "ambiguous"
+
+    assert cough_tb["candidates"][0]["canonical_name"] == "Tuberculosis"
+    assert liver_tb["candidates"][0]["canonical_name"] == "Total Bilirubin"
+
+    # The normalized transcript surfaces the ambiguity marker either way —
+    # it never silently picks one.
+    assert "TB [ambiguous — please confirm]" in build_normalized_text(cough_result)
+    assert "TB [ambiguous — please confirm]" in build_normalized_text(liver_result)
+
+
 def test_empty_transcript_returns_empty_structure():
     result = extract_fields("")
     assert result["unparsed_text"] == []

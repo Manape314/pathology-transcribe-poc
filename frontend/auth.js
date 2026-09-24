@@ -416,9 +416,13 @@ function addHistoryEntry(text, rawText) {
 }
 
 // Called by app.js once the doctor confirms which required tests to keep.
+// `updatedText`, if given, replaces the saved transcript — used when
+// resolving an ambiguous abbreviation patches "[ambiguous — please
+// confirm]" markers with the clinician's chosen expansion, so the saved
+// History entry reflects the final wording, not the pre-confirmation one.
 // Old entries (and entries where confirmation was skipped) simply have no
 // "testsRequired" key — see renderHistory's guard below.
-function confirmHistoryTests(entryId, tests) {
+function confirmHistoryTests(entryId, tests, updatedText) {
   const hpcsa = getSession();
   if (!hpcsa || !entryId) return;
 
@@ -428,6 +432,9 @@ function confirmHistoryTests(entryId, tests) {
 
   entry.testsRequired = tests;
   entry.testsConfirmed = true;
+  if (updatedText) {
+    entry.text = updatedText;
+  }
   saveHistory(hpcsa, entries);
 }
 
@@ -494,10 +501,24 @@ function renderHistory() {
         const testItem = document.createElement("li");
         testItem.className = "history-match-item";
 
+        // Badge reflects HOW it was resolved, not just where the
+        // canonical name came from — a clinician-confirmed ambiguous
+        // abbreviation shouldn't be mislabeled with an unrelated
+        // terminology-system badge (its `source` is the chosen meaning's
+        // domain, e.g. "clinical_diagnosis", not "nhls"/"loinc").
         const badge = document.createElement("span");
-        badge.className = "source-badge" + (test.source === "loinc" ? " loinc" : "");
-        badge.textContent =
-          test.source === "abbreviation" ? "ABBREV" : test.source === "loinc" ? "LOINC" : "NHLS";
+        let badgeText;
+        if (test.match_type === "ambiguous_abbreviation") {
+          badgeText = "CONFIRMED";
+        } else if (test.match_type === "known_abbreviation") {
+          badgeText = "ABBREV";
+        } else if (test.terminology_system) {
+          badgeText = test.terminology_system;
+        } else {
+          badgeText = test.source === "loinc" ? "LOINC" : "NHLS";
+        }
+        badge.className = "source-badge" + (badgeText === "LOINC" ? " loinc" : "");
+        badge.textContent = badgeText;
 
         const label = document.createElement("span");
         label.textContent = test.normalized;

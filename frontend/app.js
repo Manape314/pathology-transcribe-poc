@@ -169,10 +169,9 @@ function renderTests(entryId, testsRequired) {
 
   testsRequired.forEach((item, index) => {
     const el = document.createElement("li");
-    const isUnmatched = item.status !== "confirmed";
-    el.className = "match-item" + (isUnmatched ? " unmatched" : "");
+    el.className = "match-item" + (item.status !== "confirmed" ? " " + item.status : "");
 
-    if (!isUnmatched) {
+    if (item.status === "confirmed") {
       const checkbox = document.createElement("input");
       checkbox.type = "checkbox";
       checkbox.dataset.testIndex = String(index);
@@ -191,12 +190,7 @@ function renderTests(entryId, testsRequired) {
     candidate.textContent = `Heard: "${item.raw}"`;
     body.appendChild(candidate);
 
-    if (isUnmatched) {
-      const warning = document.createElement("p");
-      warning.className = "match-name";
-      warning.textContent = "Unrecognized — clinician confirmation required";
-      body.appendChild(warning);
-    } else {
+    if (item.status === "confirmed") {
       const name = document.createElement("p");
       name.className = "match-name";
       name.textContent = item.normalized;
@@ -219,6 +213,64 @@ function renderTests(entryId, testsRequired) {
       }
 
       body.appendChild(meta);
+    } else if (item.status === "ambiguous") {
+      const label = document.createElement("p");
+      label.className = "match-name";
+      label.textContent = "Ambiguous medical abbreviation — which meaning did you intend?";
+      body.appendChild(label);
+
+      const group = document.createElement("div");
+      group.className = "ambiguous-candidates";
+
+      item.candidates.forEach((cand, candIndex) => {
+        const optionLabel = document.createElement("label");
+        optionLabel.className = "ambiguous-candidate";
+
+        const radio = document.createElement("input");
+        radio.type = "radio";
+        radio.name = `ambiguous-${index}`;
+        radio.dataset.testIndex = String(index);
+        radio.value = String(candIndex);
+        // Never pre-select a candidate — the doctor must choose.
+        radio.checked = false;
+
+        const textWrap = document.createElement("span");
+        textWrap.className = "ambiguous-candidate-label";
+
+        const nameSpan = document.createElement("span");
+        nameSpan.textContent = cand.canonical_name;
+        textWrap.appendChild(nameSpan);
+
+        const domainSpan = document.createElement("span");
+        domainSpan.className = "ambiguous-candidate-domain";
+        domainSpan.textContent = `${cand.domain.replace(/_/g, " ")} — ${cand.reason}`;
+        textWrap.appendChild(domainSpan);
+
+        optionLabel.appendChild(radio);
+        optionLabel.appendChild(textWrap);
+        group.appendChild(optionLabel);
+      });
+
+      const noneLabel = document.createElement("label");
+      noneLabel.className = "ambiguous-candidate";
+      const noneRadio = document.createElement("input");
+      noneRadio.type = "radio";
+      noneRadio.name = `ambiguous-${index}`;
+      noneRadio.dataset.testIndex = String(index);
+      noneRadio.value = "none";
+      noneRadio.checked = false;
+      const noneText = document.createElement("span");
+      noneText.textContent = "None of these / keep original";
+      noneLabel.appendChild(noneRadio);
+      noneLabel.appendChild(noneText);
+      group.appendChild(noneLabel);
+
+      body.appendChild(group);
+    } else {
+      const warning = document.createElement("p");
+      warning.className = "match-name";
+      warning.textContent = "Unrecognized — clinician confirmation required";
+      body.appendChild(warning);
     }
 
     el.appendChild(body);
@@ -230,14 +282,51 @@ function renderTests(entryId, testsRequired) {
 
 confirmTestsBtn.addEventListener("click", () => {
   const entryId = testsSection.dataset.entryId;
-  const checkedIndexes = new Set(
-    Array.from(testsList.querySelectorAll("input[type=checkbox]:checked")).map(
-      (cb) => Number(cb.dataset.testIndex)
-    )
-  );
-  const accepted = lastTestsRequired.filter((_, i) => checkedIndexes.has(i));
+  const accepted = [];
 
-  confirmHistoryTests(entryId, accepted);
+  lastTestsRequired.forEach((item, index) => {
+    if (item.status === "confirmed") {
+      const checkbox = testsList.querySelector(
+        `input[type="checkbox"][data-test-index="${index}"]`
+      );
+      if (checkbox && checkbox.checked) {
+        accepted.push(item);
+      }
+      return;
+    }
+
+    if (item.status === "ambiguous") {
+      const selected = testsList.querySelector(`input[name="ambiguous-${index}"]:checked`);
+      if (!selected || selected.value === "none") {
+        return; // Doctor didn't pick a meaning — excluded, same as an unrecognized item.
+      }
+      const candidate = item.candidates[Number(selected.value)];
+      accepted.push({
+        raw: item.raw,
+        normalized: candidate.canonical_name,
+        source: candidate.domain,
+        terminology_system: candidate.terminology_system,
+        code: candidate.code,
+        match_type: "ambiguous_abbreviation",
+        confidence: null,
+        status: "confirmed",
+        confirmation_status: "clinician_confirmed",
+        candidates: null,
+        reason: null,
+      });
+
+      // Patch the reconstructed transcript: swap the "[ambiguous — please
+      // confirm]" marker for this item with the doctor's chosen expansion,
+      // using the same bracket convention as an auto-expanded abbreviation.
+      const marker = `${item.raw} [ambiguous — please confirm]`;
+      const replacement = `${candidate.canonical_name} (${item.raw})`;
+      currentNormalizedText = currentNormalizedText.split(marker).join(replacement);
+    }
+    // status "unrecognized": never included.
+  });
+
+  updateTranscriptView();
+  confirmHistoryTests(entryId, accepted, currentNormalizedText);
   hideTests();
   setStatus(`Saved ${accepted.length} confirmed test(s) to history.`);
 });

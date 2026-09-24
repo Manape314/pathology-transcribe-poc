@@ -110,14 +110,24 @@ choice. Edit it freely — it biases, it does not restrict.
 
 `backend/matching.py` loads the NHLS test index and LOINC once at startup
 and exposes `best_single_match()`: fuzzy-matching (rapidfuzz) a single
-phrase against both, at a caller-chosen confidence threshold. It's called
-by `terminology_normalize.py` to resolve each individual item **already
-extracted from the "tests required" field** (see "Structured field
-extraction" below) — never over the whole transcript. An earlier version
-of this module also ran fuzzy matching over the entire raw transcript to
-produce a browsable suggestion list; that was removed because it couldn't
-tell prose apart from an actual test name and regularly suggested
-unrelated LOINC codes from ordinary sentence fragments.
+phrase against both, at a caller-chosen confidence threshold, via a
+word-index prefilter (never linearly fuzzy-scans the full ~45k LOINC
+list). It's called by `terminology_normalize.py` to resolve each
+individual item **already extracted from the "tests required" field**
+(see "Structured field extraction" below) — never over the whole
+transcript. An earlier version of this module also ran fuzzy matching over
+the entire raw transcript to produce a browsable suggestion list; that was
+removed because it couldn't tell prose apart from an actual test name and
+regularly suggested unrelated LOINC codes from ordinary sentence
+fragments.
+
+`fuzz.token_set_ratio` (the scorer used) is case-sensitive by default, and
+NHLS/LOINC entries keep their original capitalization — `best_single_match`
+passes rapidfuzz's `utils.default_process` so query and candidates are
+compared case/punctuation-insensitively. Without this, a properly-
+capitalized canonical name like `"Full Blood Count"` scored 41 against the
+correct NHLS entry (case mismatch alone) instead of the true 100 — found
+and fixed while building the terminology/code lookup below.
 
 This needs reference data that is **not** in the repo (large, and partly
 licensed — see below), and a one-time local build step:
@@ -165,11 +175,43 @@ SNOMED CT is deliberately not wired up yet (see "Out of scope").
   guessed.
 - **`tests_required`** goes through `terminology_normalize.py`, which reuses
   `matching.py`'s already-loaded NHLS/LOINC data (no duplicate terminology
-  system) via a matching order: curated abbreviation dictionary (FBC, CRP,
-  U&E, ...) → exact canonical match → fuzzy match via `matching.
-  best_single_match()` at a stricter cutoff than a generic search. Each item
-  keeps both `raw` and `normalized` values; anything that doesn't clear the
-  confidence bar is `status: "unmatched"` rather than guessed.
+  system) via a matching order: curated **unambiguous** abbreviation
+  dictionary (101 entries — FBC, CRP, U&E, PT, TSH, PSA, ... — across
+  haematology, coagulation, chemical pathology, endocrine, cardiac,
+  microbiology, tumour markers, immunology, blood bank) → curated
+  **ambiguous** abbreviation dictionary (see below) → exact canonical
+  match → fuzzy match via `matching.best_single_match()` at a stricter
+  cutoff than a generic search. Each item keeps both `raw` and `normalized`
+  values, plus `terminology_system` (`"NHLS"`/`"LOINC"`/`null`) and `code`
+  — looked up from the already-loaded data at resolution time, **never
+  hardcoded per abbreviation**, so nothing is invented; an NHLS match
+  always has `code: null` since the source handbook has no test codes.
+  Anything that doesn't clear the confidence bar is `status:
+  "unrecognized"` rather than guessed. Spoken/punctuated letter-by-letter
+  forms ("F B C", "F.B.C.", "C-R-P") are normalized to the plain form
+  before lookup.
+
+  **Ambiguous abbreviations** (an abbreviation with more than one
+  legitimate medical meaning — e.g. `TB` could mean Total Bilirubin or
+  Tuberculosis) are never silently resolved by string similarity or
+  context, no matter how one-sided the evidence looks. They always come
+  back as `status: "ambiguous"` with a ranked `candidates` list, each
+  carrying a plain-language `reason` (e.g. `"context matched: cough,
+  chest"` vs `"no supporting context found"`) — context (surrounding
+  `clinical_history`, `provisional_diagnosis`, `specimen_type`,
+  `department`, and sibling `tests_required` items) only ever **ranks and
+  explains** candidates for the frontend's disambiguation UI, never
+  auto-selects one. Automatic contextual disambiguation is intentionally
+  deferred until it can be validated against a clinically reviewed
+  dataset. 15 well-documented genuinely-ambiguous abbreviations are
+  covered — `TB`, `UA`, `PCR`, `MS`, `CA`, `BS`, `BM`, `CP`, `RA`, `MI`,
+  `CVA`, `PID`, `DM`, `CF`, `HD` — not a final vocabulary:
+  `AMBIGUOUS_ABBREVIATIONS` in
+  `terminology_normalize.py` is a plain `{abbreviation: [{canonical_name,
+  domain, keywords}, ...]}` dict with no abbreviation-specific logic
+  anywhere in the resolver, so it can grow substantially (or be generated/
+  imported from a validated terminology resource) without touching the
+  matching engine.
 - **Everything else** (patient/doctor names, patient ID, HPCSA number,
   ward, hospital, specimen type/site, medication, priority) is **pure raw
   passthrough** — terminology/fuzzy matching never touches identifiers or
@@ -194,14 +236,27 @@ one click away behind the "View raw transcript" toggle.
 pytest backend/tests -v
 ```
 
-Covers date/time normalization, terminology normalization (including
-negative cases — fuzzy matching must not "correct" unrelated words into
-test names), field extraction and normalized-transcript construction, and
-integration tests that post through the **real** `POST /transcribe` route
-with Whisper's recognition step stubbed (so it's fast/deterministic) but
-every line of the extraction/normalization/matching code running for real
-— including a regression test confirming a decoy phrase embedded in prose
-(e.g. "urea analysis urine microscopy") never surfaces as a suggested test.
+Covers date/time normalization, terminology normalization (known
+abbreviations, spoken letter-by-letter forms, case/punctuation variants,
+the ambiguous-abbreviation cases — confirming context re-ranks candidates
+but never changes `status` away from `"ambiguous"` — and negative cases:
+fuzzy matching must not "correct" unrelated words into test names),
+context threading through `field_extraction.py` (the same ambiguous
+abbreviation ranks differently depending on `clinical_history`, proving
+context actually flows end-to-end, not just that the ranking function
+works in isolation), normalized-transcript construction, and integration
+tests that post through the **real** `POST /transcribe` route with
+Whisper's recognition step stubbed (so it's fast/deterministic) but every
+line of the extraction/normalization/matching code running for real —
+including a regression test confirming a decoy phrase embedded in prose
+(e.g. "urea analysis urine microscopy") never surfaces as a suggested
+test, and one confirming an ambiguous abbreviation reaches the frontend
+with its full candidate list through the actual endpoint.
+
+The Whisper-dependent `test_transcribe_endpoint.py` needs enough free RAM
+to load `large-v3` fresh (confirmed on this machine: fails with `mkl_malloc:
+failed to allocate memory` under ~2GB free) — the other three test files
+have no such dependency and run in a few seconds.
 
 ## Frontend — serve it
 
@@ -258,11 +313,24 @@ Returns:
     "time_requested_raw": "25 minutes to 3 p.m",
     "time_requested": "14:35",
     "time_requested_status": "confirmed",
-    "tests_required_raw": "FBC, CRP, U and E. Blood culture",
+    "tests_required_raw": "FBC, CRP, U and E, TB",
     "tests_required": [
-      { "raw": "FBC", "normalized": "Full Blood Count", "source": "abbreviation", "status": "confirmed" },
-      { "raw": "CRP", "normalized": "C-reactive protein", "source": "abbreviation", "status": "confirmed" },
-      { "raw": "U and E", "normalized": "Urea and Electrolytes", "source": "abbreviation", "status": "confirmed" }
+      {
+        "raw": "FBC", "normalized": "Full Blood Count", "source": "abbreviation",
+        "terminology_system": "NHLS", "code": null, "match_type": "known_abbreviation",
+        "confidence": 1.0, "status": "confirmed", "confirmation_status": "automatic",
+        "candidates": null, "reason": null
+      },
+      {
+        "raw": "TB", "normalized": null, "source": null,
+        "terminology_system": null, "code": null, "match_type": "ambiguous_abbreviation",
+        "confidence": null, "status": "ambiguous", "confirmation_status": "pending",
+        "candidates": [
+          { "canonical_name": "Total Bilirubin", "domain": "chemical_pathology", "terminology_system": "NHLS", "code": null, "reason": "no supporting context found" },
+          { "canonical_name": "Tuberculosis", "domain": "clinical_diagnosis", "terminology_system": "NHLS", "code": null, "reason": "no supporting context found" }
+        ],
+        "reason": null
+      }
     ],
     "unparsed_text": []
   }
@@ -276,10 +344,36 @@ hit an unexpected error — it fails safe, falling back to `raw_text` for
 `normalized_text` too); see "Structured field extraction" above for the
 full field list and what each status value means.
 
+### Clinician disambiguation UI
+
+When a `tests_required` item comes back `status: "ambiguous"`, the
+"Tests required" panel (`frontend/app.js`) renders a radio-button group —
+one option per candidate (canonical name + domain hint + the ranking
+`reason`) plus a **"None of these / keep original"** option, none
+pre-selected. On **Confirm & save**, the doctor's pick (or "none") resolves
+that item into the final structured record and patches the `"[ambiguous —
+please confirm]"` marker in the displayed/saved transcript with the chosen
+expansion — both the transcript text and the saved History entry reflect
+the clinician's decision, with the original raw phrase preserved
+alongside it (`match_type: "ambiguous_abbreviation"`,
+`confirmation_status: "clinician_confirmed"`).
+
 ## Out of scope (deliberately)
 
-SNOMED CT matching, patient identifiers, server-side storage (all doctor
-profiles, history, and confirmed tests live in the browser's localStorage
-only — the server is stateless). NHLS test index and LOINC matching are now
-implemented; SNOMED CT is a planned fast-follow (its license and ~3.6GB size
-need more preprocessing than fit this pass).
+- **SNOMED CT matching** — the raw SNOMED CT files exist under
+  `Medical_Terminologies/` but were never processed into `backend/data/`
+  (unlike NHLS/LOINC) — there's nothing loaded to "integrate." Building
+  that index is a separate undertaking comparable in size to the original
+  LOINC build, not a small addition.
+- **A separate terminology-resolution endpoint** — `structured.
+  tests_required` already returns full per-item resolution (including
+  ambiguous candidates) as part of `POST /transcribe`; the doctor's
+  selection is resolved entirely client-side from data already delivered,
+  so a round-trip endpoint would add nothing.
+- **Automatic contextual disambiguation** — context ranks and explains
+  ambiguous candidates but never auto-selects one, even with strong
+  one-sided evidence; deferred until validated against a clinically
+  reviewed dataset.
+- Patient identifiers, server-side storage (all doctor profiles, history,
+  and confirmed tests live in the browser's localStorage only — the server
+  is stateless).

@@ -137,6 +137,35 @@ def test_transcribe_endpoint_does_not_suggest_unrelated_tests_from_prose(monkeyp
     assert "urea analysis urine microscopy" in structured["clinical_history"]["value"]
 
 
+def test_transcribe_endpoint_surfaces_ambiguous_abbreviation_for_clinician(monkeypatch):
+    # Through the REAL endpoint: an ambiguous abbreviation must come back
+    # as status "ambiguous" with a full candidate list for the frontend to
+    # render as a disambiguation choice — never silently resolved, even
+    # though clinical_history here has one-sided supporting context.
+    transcript = (
+        "Patient name, Jane Doe. Clinical history, chronic cough and "
+        "weight loss. Tests required, FBC, TB."
+    )
+    client = _transcribe_with(monkeypatch, transcript)
+    response = client.post(
+        "/transcribe",
+        files={"file": ("recording.webm", b"fake-audio-bytes", "audio/webm")},
+    )
+
+    assert response.status_code == 200
+    structured = response.json()["structured"]
+
+    by_raw = {t["raw"]: t for t in structured["tests_required"]}
+    assert by_raw["FBC"]["status"] == "confirmed"
+    assert by_raw["TB"]["status"] == "ambiguous"
+    assert by_raw["TB"]["normalized"] is None
+    candidate_names = {c["canonical_name"] for c in by_raw["TB"]["candidates"]}
+    assert candidate_names == {"Total Bilirubin", "Tuberculosis"}
+
+    # Patient identifiers are still untouched.
+    assert structured["patient_name"]["value"] == "Jane Doe"
+
+
 def test_transcribe_endpoint_empty_text_has_empty_structured(monkeypatch):
     client = _transcribe_with(monkeypatch, "")
     response = client.post(

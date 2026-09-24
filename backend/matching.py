@@ -28,7 +28,7 @@ import json
 import re
 from pathlib import Path
 
-from rapidfuzz import fuzz, process
+from rapidfuzz import fuzz, process, utils
 
 DATA_DIR = Path(__file__).parent / "data"
 
@@ -137,18 +137,26 @@ def _candidate_indices(phrase: str, word_index: dict[str, set[int]]) -> set[int]
 
 
 def _best_match(phrase, choices, word_index):
-    # Choices/index are built from lowercased text (_build_word_index); the
-    # scorer itself is also case-sensitive (confirmed: fuzz.ratio('Blood',
-    # 'blood') == 80, not 100) — callers may pass original-case text (e.g.
-    # terminology_normalize.py's raw "tests required" items), so normalize
-    # once here rather than relying on every caller to remember to.
-    phrase = phrase.lower()
-    subset_indices = _candidate_indices(phrase, word_index)
+    # The word-index prefilter needs a lowercased query (it's built from
+    # lowercased text — _build_word_index). For the actual scoring, pass
+    # rapidfuzz's own case/punctuation-normalizing processor rather than
+    # just lowercasing the query: choices (_NHLS_CHOICES/_LOINC_CHOICES)
+    # keep their original capitalization, and fuzz.token_set_ratio is
+    # case-sensitive — confirmed this was silently tanking scores for
+    # anything with capitals on both sides (e.g. querying the properly-
+    # capitalized canonical name "Full Blood Count" against the NHLS
+    # choice "Full Blood Count (FBC), and differential (FBCD)" scored 41
+    # instead of the correct 100, because only the query was lowercased).
+    subset_indices = _candidate_indices(phrase.lower(), word_index)
     if not subset_indices:
         return None
     subset = {i: choices[i] for i in subset_indices}
     return process.extractOne(
-        phrase, subset, scorer=_SCORER, score_cutoff=MIN_MATCH_SCORE
+        phrase,
+        subset,
+        scorer=_SCORER,
+        processor=utils.default_process,
+        score_cutoff=MIN_MATCH_SCORE,
     )
 
 

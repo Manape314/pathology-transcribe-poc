@@ -134,8 +134,13 @@ def _store_field(result: dict, field_key: str, raw_value: str) -> None:
         return
 
     if field_key == "tests_required":
+        # Normalization is deferred to a second pass in extract_fields(),
+        # run after every field has been extracted, so terminology_
+        # normalize.py's context-based candidate ranking (for ambiguous
+        # abbreviations) can see clinical_history/provisional_diagnosis/
+        # specimen_type/department regardless of what order they were
+        # dictated in relative to "Tests required".
         result["tests_required_raw"] = raw_value
-        result["tests_required"] = normalize_tests_required(raw_value)
         return
 
     # Everything else: pure raw passthrough. No fuzzy/terminology matching
@@ -181,6 +186,13 @@ def extract_fields(transcript: str) -> dict:
         if gap_text:
             unparsed.append(gap_text)
 
+    # Second pass: now that every field is extracted, normalize
+    # tests_required with the other fields available as context.
+    if "tests_required_raw" in result:
+        result["tests_required"] = normalize_tests_required(
+            result["tests_required_raw"], context=result
+        )
+
     result["unparsed_text"] = unparsed
     return result
 
@@ -191,7 +203,7 @@ def extract_fields(transcript: str) -> dict:
 # Reconstructs a readable, structured summary from `structured` (the dict
 # extract_fields() returns) — same field order as the dictation proforma.
 # Confirmed date/time/test values are substituted in; anything ambiguous or
-# unmatched keeps its raw text with an explicit marker, never guessed.
+# unrecognized keeps its raw text with an explicit marker, never guessed.
 
 _DISPLAY_FIELDS = [
     ("patient_name", "Patient name"),
@@ -230,6 +242,8 @@ def _format_test_item(item: dict) -> str:
         if item["raw"].strip().lower() != item["normalized"].strip().lower():
             return f"{item['normalized']} ({item['raw']})"
         return item["normalized"]
+    if item["status"] == "ambiguous":
+        return f"{item['raw']} [ambiguous — please confirm]"
     return f"{item['raw']} [unrecognized]"
 
 
