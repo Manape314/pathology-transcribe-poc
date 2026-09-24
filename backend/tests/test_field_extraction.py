@@ -56,6 +56,18 @@ def test_full_example_transcript():
     assert any("staphylococcus" in u for u in result["unparsed_text"])
     assert "staphylococcus" not in result["department"]["value"]
 
+    # Medication dosing shorthand is expanded through the real pipeline —
+    # the fixture transcript's "1 gram PRN" becomes "1 gram As Needed
+    # (PRN)"; identifiers elsewhere are unaffected by this.
+    assert result["medication"]["value"] == "paracetamol, 1 gram As Needed (PRN)"
+    assert result["medication"]["resolved_terms"][0]["normalized_term"] == "As Needed"
+
+    # clinical_history/provisional_diagnosis in this fixture contain no
+    # recognized clinical abbreviations — pass through byte-for-byte.
+    assert result["clinical_history"]["value"] == result["clinical_history"]["raw"]
+    assert result["clinical_history"]["resolved_terms"] == []
+    assert result["provisional_diagnosis"]["resolved_terms"] == []
+
 
 def test_build_normalized_text_substitutes_confident_values():
     structured = extract_fields(TRANSCRIPT)
@@ -132,6 +144,44 @@ def test_context_threading_changes_ambiguous_candidate_ranking_not_status():
     # it never silently picks one.
     assert "TB [ambiguous — please confirm]" in build_normalized_text(cough_result)
     assert "TB [ambiguous — please confirm]" in build_normalized_text(liver_result)
+
+
+def test_clinical_history_and_provisional_diagnosis_abbreviations_end_to_end():
+    transcript = (
+        "Clinical history, longstanding SOB and HTN, now query DM. "
+        "Provisional diagnosis, suspected PID versus UTI. "
+        "Tests required, FBC."
+    )
+    result = extract_fields(transcript)
+
+    assert result["clinical_history"]["value"] == (
+        "longstanding Shortness of Breath (SOB) and Hypertension (HTN), "
+        "now query DM [ambiguous — please confirm]"
+    )
+    ch_statuses = [t["status"] for t in result["clinical_history"]["resolved_terms"]]
+    assert ch_statuses == ["confirmed", "confirmed", "ambiguous"]
+
+    assert "PID [ambiguous — please confirm]" in result["provisional_diagnosis"]["value"]
+    assert "Urinary Tract Infection (UTI)" in result["provisional_diagnosis"]["value"]
+
+    normalized_text = build_normalized_text(result)
+    assert "Clinical history: longstanding Shortness of Breath (SOB)" in normalized_text
+    assert "DM [ambiguous — please confirm]" in normalized_text
+    assert "Provisional diagnosis: suspected PID [ambiguous — please confirm]" in normalized_text
+
+
+def test_identifiers_remain_untouched_by_clinical_terminology():
+    # patient_name/patient_id/hpcsa_number/requesting_doctor/ward/hospital/
+    # specimen_type/specimen_site/priority never go through
+    # clinical_terminology.py — they keep the plain {"raw","value","status"}
+    # passthrough shape with no "resolved_terms" key at all.
+    result = extract_fields(TRANSCRIPT)
+    for field_key in (
+        "patient_name", "patient_id", "hpcsa_number", "requesting_doctor",
+        "ward", "hospital", "specimen_type", "specimen_site", "priority",
+    ):
+        assert "resolved_terms" not in result[field_key]
+        assert result[field_key]["value"] == result[field_key]["raw"]
 
 
 def test_empty_transcript_returns_empty_structure():

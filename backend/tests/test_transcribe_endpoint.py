@@ -104,6 +104,11 @@ def test_transcribe_endpoint_raw_vs_normalized_and_structured(monkeypatch):
 
     assert any("staphylococcus" in u for u in structured["unparsed_text"])
 
+    # Medication dosing shorthand is resolved through the real endpoint too.
+    assert "resolved_terms" in structured["medication"]
+    assert structured["medication"]["resolved_terms"][0]["normalized_term"] == "As Needed"
+    assert "As Needed (PRN)" in structured["medication"]["value"]
+
 
 def test_transcribe_endpoint_does_not_suggest_unrelated_tests_from_prose(monkeypatch):
     # Regression guard for the original bug report: phrases embedded in

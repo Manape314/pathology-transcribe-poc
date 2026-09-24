@@ -2,13 +2,15 @@
 Parses a dictated pathology-request transcript ("Patient name, X. Patient
 ID, Y. ...") into named fields, by anchoring on known label phrases.
 
-Only `tests_required` goes through terminology normalization
-(terminology_normalize.py) and only date/time fields go through
-datetime_normalize.py — every other field (patient name, doctor name, IDs,
-ward, hospital, specimen type/site, medication, priority) is pure raw
-passthrough. Fuzzy/terminology matching must never touch identifiers or
-names (see terminology_normalize.py's docstring, and point 16 of the
-originating request).
+`tests_required` goes through terminology normalization against NHLS/LOINC
+(terminology_normalize.py); `clinical_history`, `provisional_diagnosis`,
+and `medication` go through curated clinical/medication abbreviation
+scanning (clinical_terminology.py); date/time fields go through
+datetime_normalize.py. Every other field (patient name, doctor name, IDs,
+ward, hospital, specimen type/site, priority) is pure raw passthrough.
+Fuzzy/terminology matching must never touch identifiers or names (see
+terminology_normalize.py's and clinical_terminology.py's docstrings, and
+point 16 of the originating request).
 
 Anything not claimed by a recognized field (a run of text with no label
 before it, or trailing text after the last field's sentence) is collected
@@ -20,6 +22,7 @@ disappear into an unrelated field.
 
 import re
 
+import clinical_terminology
 from datetime_normalize import normalize_date, normalize_time
 from terminology_normalize import normalize_tests_required
 
@@ -51,6 +54,12 @@ _LABEL_DEFS = [
 # free-text prose) — capped only by the NEXT recognized label, never by a
 # sentence-ending period.
 _LONG_FIELDS = {"clinical_history", "provisional_diagnosis", "tests_required"}
+
+# Fields whose terminology resolution is deferred to extract_fields()'s
+# second pass, once every field's raw value is available as context.
+_DEFERRED_TERMINOLOGY_FIELDS = {
+    "tests_required", "clinical_history", "provisional_diagnosis", "medication",
+}
 
 _DATE_FIELDS = {"date_of_birth", "date_requested"}
 _TIME_FIELDS = {"time_requested"}
@@ -133,19 +142,18 @@ def _store_field(result: dict, field_key: str, raw_value: str) -> None:
         result[f"{field_key}_status"] = status
         return
 
-    if field_key == "tests_required":
+    if field_key in _DEFERRED_TERMINOLOGY_FIELDS:
         # Normalization is deferred to a second pass in extract_fields(),
-        # run after every field has been extracted, so terminology_
-        # normalize.py's context-based candidate ranking (for ambiguous
-        # abbreviations) can see clinical_history/provisional_diagnosis/
-        # specimen_type/department regardless of what order they were
-        # dictated in relative to "Tests required".
-        result["tests_required_raw"] = raw_value
+        # run after every field has been extracted, so context-based
+        # candidate ranking (for ambiguous abbreviations) can see
+        # clinical_history/provisional_diagnosis/specimen_type/department/
+        # tests_required regardless of what order they were dictated in.
+        result[f"{field_key}_raw"] = raw_value
         return
 
     # Everything else: pure raw passthrough. No fuzzy/terminology matching
     # ever touches patient/doctor names, IDs, ward, hospital, specimen
-    # type/site, medication, or priority.
+    # type/site, or priority.
     result[field_key] = {"raw": raw_value, "value": raw_value, "status": "extracted"}
 
 
@@ -186,8 +194,23 @@ def extract_fields(transcript: str) -> dict:
         if gap_text:
             unparsed.append(gap_text)
 
-    # Second pass: now that every field is extracted, normalize
-    # tests_required with the other fields available as context.
+    # Second pass: now that every field is extracted, resolve
+    # clinical_history/provisional_diagnosis/medication first — they read
+    # sibling context straight off the "_raw" keys (see
+    # clinical_terminology._context_text_for), so ordering doesn't matter
+    # to them — and tests_required.normalize_tests_required's own
+    # _context_text reads clinical_history/provisional_diagnosis as
+    # already-resolved dicts (field["value"]), so it must run AFTER them.
+    for field_key, unambiguous_dict in (
+        ("clinical_history", clinical_terminology.CLINICAL_ABBREVIATIONS),
+        ("provisional_diagnosis", clinical_terminology.CLINICAL_ABBREVIATIONS),
+        ("medication", clinical_terminology.MEDICATION_ABBREVIATIONS),
+    ):
+        if f"{field_key}_raw" in result:
+            result[field_key] = clinical_terminology.resolve_field_text(
+                result[f"{field_key}_raw"], field_key, unambiguous_dict, context=result
+            )
+
     if "tests_required_raw" in result:
         result["tests_required"] = normalize_tests_required(
             result["tests_required_raw"], context=result

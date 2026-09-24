@@ -438,6 +438,24 @@ function confirmHistoryTests(entryId, tests, updatedText) {
   saveHistory(hpcsa, entries);
 }
 
+// Called by app.js's clinical_history/provisional_diagnosis/medication
+// confirmation panels once the doctor resolves an ambiguous abbreviation
+// in one of those fields. Only patches the saved transcript text — unlike
+// confirmHistoryTests, it never touches entry.testsRequired/
+// testsConfirmed, so it can't clobber the separate Tests required panel's
+// own save.
+function updateHistoryText(entryId, updatedText) {
+  const hpcsa = getSession();
+  if (!hpcsa || !entryId || !updatedText) return;
+
+  const entries = getHistory(hpcsa);
+  const entry = entries.find((e) => e.id === entryId);
+  if (!entry) return;
+
+  entry.text = updatedText;
+  saveHistory(hpcsa, entries);
+}
+
 function deleteHistoryEntry(id) {
   const hpcsa = getSession();
   if (!hpcsa) return;

@@ -112,6 +112,38 @@
       </div>
     </section>
 
+    <!-- Ambiguous clinical/medication abbreviations, one independent panel
+         per field — only shown when that field actually contains an
+         abbreviation with more than one legitimate meaning. Confirmed
+         (unambiguous) expansions need no action: they're already shown
+         inline in the transcript above. -->
+    <section id="clinicalHistorySection" class="matches hidden" aria-live="polite">
+      <h2>Clinical history — terms to confirm</h2>
+      <ul id="clinicalHistoryList" class="matches-list"></ul>
+      <div class="matches-actions">
+        <button id="confirmClinicalHistoryBtn" class="primary-btn" type="button">Confirm &amp; save</button>
+        <button id="skipClinicalHistoryBtn" class="nav-btn" type="button">Skip</button>
+      </div>
+    </section>
+
+    <section id="provisionalDiagnosisSection" class="matches hidden" aria-live="polite">
+      <h2>Provisional diagnosis — terms to confirm</h2>
+      <ul id="provisionalDiagnosisList" class="matches-list"></ul>
+      <div class="matches-actions">
+        <button id="confirmProvisionalDiagnosisBtn" class="primary-btn" type="button">Confirm &amp; save</button>
+        <button id="skipProvisionalDiagnosisBtn" class="nav-btn" type="button">Skip</button>
+      </div>
+    </section>
+
+    <section id="medicationSection" class="matches hidden" aria-live="polite">
+      <h2>Medication — terms to confirm</h2>
+      <ul id="medicationList" class="matches-list"></ul>
+      <div class="matches-actions">
+        <button id="confirmMedicationBtn" class="primary-btn" type="button">Confirm &amp; save</button>
+        <button id="skipMedicationBtn" class="nav-btn" type="button">Skip</button>
+      </div>
+    </section>
+
     <!-- "Add to home screen" nudge, shown once after login/registration. -->
     <div id="installPrompt" class="install-banner hidden">
       <p id="installText" class="install-text"></p>

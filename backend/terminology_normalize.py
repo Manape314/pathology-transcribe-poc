@@ -32,6 +32,8 @@ paths.
 import re
 
 import matching
+from text_normalize import abbrev_key as _abbrev_key
+from text_normalize import normalize_text as _normalize_text
 
 # Stricter than matching.MIN_MATCH_SCORE (80, used for the browsable
 # "suggested tests" panel) — here we're assigning ONE canonical answer to a
@@ -405,30 +407,6 @@ AMBIGUOUS_ABBREVIATIONS: dict[str, list[dict]] = {
         },
     ],
 }
-
-
-def _normalize_text(s: str) -> str:
-    s = s.lower().strip()
-    s = re.sub(r"[.,;:]+$", "", s)
-    s = re.sub(r"\s+", " ", s)
-    return s.strip()
-
-
-def _despace_letters(s: str) -> str:
-    """Collapses spoken/punctuated letter-by-letter forms ("F B C",
-    "F.B.C.", "C-R-P") to a plain run ("fbc", "crp") — but ONLY when every
-    token is a single letter, so ordinary multi-letter words separated by
-    spaces/hyphens (e.g. "c-reactive protein") are never touched."""
-    tokens = [t for t in re.split(r"[\s.\-]+", s.strip()) if t]
-    if len(tokens) >= 2 and all(len(t) == 1 and t.isalpha() for t in tokens):
-        return "".join(tokens)
-    return s
-
-
-def _abbrev_key(s: str) -> str:
-    key = _normalize_text(s)
-    key = re.sub(r"\s*&\s*", "&", key)
-    return _despace_letters(key)
 
 
 # Built once at import time from matching's already-loaded data (which is

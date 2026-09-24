@@ -212,8 +212,44 @@ SNOMED CT is deliberately not wired up yet (see "Out of scope").
   anywhere in the resolver, so it can grow substantially (or be generated/
   imported from a validated terminology resource) without touching the
   matching engine.
+- **`clinical_history`, `provisional_diagnosis`, and `medication`** go
+  through `clinical_terminology.py` — a sibling to `terminology_normalize.py`
+  for free-text clinical fields rather than a discrete list like
+  `tests_required`. It scans the raw prose for **exact, word-boundary**
+  matches against curated dictionaries only (never fuzzy matching against a
+  corpus — that's what makes it safe to run over free text at all, unlike
+  the whole-transcript fuzzy matching this project deliberately removed
+  earlier): `CLINICAL_ABBREVIATIONS` (diagnosis/symptom/history shorthand —
+  SOB, HTN, CKD, COPD, UTI, DVT, PE, PMH, NKDA, ...) for the first two
+  fields, and `MEDICATION_ABBREVIATIONS` (dosing/route/frequency shorthand —
+  OD, BD, TDS, PRN, IV, IM, PO, ...) for `medication` — three genuinely
+  different vocabulary domains, each with its own dictionary, resolved
+  through the same engine. A word not in any of these dictionaries is
+  copied through completely untouched — nothing is scored or flagged just
+  because it appears in free text.
+
+  **Ambiguity is not duplicated per field.** Genuinely ambiguous
+  abbreviations (the same 15-entry `AMBIGUOUS_ABBREVIATIONS` used for
+  `tests_required`) are reused as-is for clinical/medication scanning too —
+  `DM`, `MI`, `MS`, `PID`, etc. always come back `status: "ambiguous"`
+  wherever they're found, with **no field-specific "dominant meaning"
+  shortcut** (e.g. `DM` in a clinical history is *not* auto-expanded to
+  "Diabetes Mellitus" just because that's the statistically likely reading —
+  it still requires clinician confirmation, exactly like `tests_required`).
+  Confirmed matches use a different item shape from `tests_required`
+  (`raw_phrase`, `normalized_term`, `field`, `terminology_system`, `code`,
+  `match_type`, `confidence`, `status`, `confirmation_status`, `candidates`,
+  `reason`, `provenance`) — `terminology_system`/`code` are always `null`
+  here (SNOMED CT isn't integrated — see "Out of scope" — and nothing here
+  ever fabricates a code); the shape is deliberately SNOMED-pluggable, so a
+  future coded lookup could populate them for confirmed matches without
+  changing anything else. Each field's resolved value (`structured.
+  clinical_history.value`, etc.) is the prose with confirmed abbreviations
+  expanded in place (`"Shortness of Breath (SOB)"`) and ambiguous ones
+  marked (`"DM [ambiguous — please confirm]"`) — `resolved_terms` carries
+  the full per-item detail for the frontend's disambiguation UI.
 - **Everything else** (patient/doctor names, patient ID, HPCSA number,
-  ward, hospital, specimen type/site, medication, priority) is **pure raw
+  ward, hospital, specimen type/site, priority) is **pure raw
   passthrough** — terminology/fuzzy matching never touches identifiers or
   names.
 - Text not claimed by any recognized field (e.g. a corrupted trailing
@@ -241,22 +277,26 @@ abbreviations, spoken letter-by-letter forms, case/punctuation variants,
 the ambiguous-abbreviation cases — confirming context re-ranks candidates
 but never changes `status` away from `"ambiguous"` — and negative cases:
 fuzzy matching must not "correct" unrelated words into test names),
-context threading through `field_extraction.py` (the same ambiguous
-abbreviation ranks differently depending on `clinical_history`, proving
-context actually flows end-to-end, not just that the ranking function
-works in isolation), normalized-transcript construction, and integration
-tests that post through the **real** `POST /transcribe` route with
-Whisper's recognition step stubbed (so it's fast/deterministic) but every
-line of the extraction/normalization/matching code running for real —
-including a regression test confirming a decoy phrase embedded in prose
+free-text clinical/medication abbreviation scanning
+(`test_clinical_terminology.py` — unambiguous expansion in prose,
+ambiguous abbreviations always flagged regardless of field, word-boundary
+safety, plain prose passing through untouched, medication dosing
+shorthand), context threading through `field_extraction.py` (the same
+ambiguous abbreviation ranks differently depending on `clinical_history`,
+proving context actually flows end-to-end, not just that the ranking
+function works in isolation), normalized-transcript construction, and
+integration tests that post through the **real** `POST /transcribe` route
+with Whisper's recognition step stubbed (so it's fast/deterministic) but
+every line of the extraction/normalization/matching code running for real
+— including a regression test confirming a decoy phrase embedded in prose
 (e.g. "urea analysis urine microscopy") never surfaces as a suggested
 test, and one confirming an ambiguous abbreviation reaches the frontend
 with its full candidate list through the actual endpoint.
 
 The Whisper-dependent `test_transcribe_endpoint.py` needs enough free RAM
 to load `large-v3` fresh (confirmed on this machine: fails with `mkl_malloc:
-failed to allocate memory` under ~2GB free) — the other three test files
-have no such dependency and run in a few seconds.
+failed to allocate memory` under ~2GB free) — the other test files have no
+such dependency and run in a few seconds.
 
 ## Frontend — serve it
 
@@ -357,6 +397,15 @@ expansion — both the transcript text and the saved History entry reflect
 the clinician's decision, with the original raw phrase preserved
 alongside it (`match_type: "ambiguous_abbreviation"`,
 `confirmation_status: "clinician_confirmed"`).
+
+Clinical history, provisional diagnosis, and medication each get their own
+**independent** confirmation panel (same radio-button/"none of these"
+pattern, via `setupFieldPanel()` in `frontend/app.js`) — separate from
+"Tests required" and from each other, so confirming one never affects the
+others. Only ambiguous terms ever appear in these panels; confirmed
+(unambiguous) expansions are already embedded directly in the displayed
+transcript, with nothing further for the doctor to check off. A panel with
+no ambiguous terms simply doesn't appear.
 
 ## Out of scope (deliberately)
 
