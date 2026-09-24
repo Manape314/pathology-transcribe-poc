@@ -40,7 +40,7 @@ _LABEL_DEFS = [
     ("specimen_site", r"specimen\s+site"),
     ("clinical_history", r"clinical\s+history"),
     ("provisional_diagnosis", r"provisional\s+diagnosis"),
-    ("tests_required", r"tests?\s+required"),
+    ("tests_required", r"tests?\s+(?:required|requested|needed)"),
     ("medication", r"relevant\s+medication|\bmedication\b"),
     ("requesting_doctor", r"requesting\s+doctor"),
     ("hpcsa_number", r"hpcsa\s+number"),

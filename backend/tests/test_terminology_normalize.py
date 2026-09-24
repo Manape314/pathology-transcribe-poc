@@ -52,6 +52,7 @@ def test_normalize_test_item_known_terms(raw, expected_normalized):
         ("Hb", "Haemoglobin"),
         ("RBC", "Red Cell Count"),
         ("HbA1c", "Glycated Haemoglobin"),
+        ("HB1c", "Glycated Haemoglobin"),  # common mishearing of HbA1c
         ("TSH", "Thyroid Stimulating Hormone"),
         ("LH", "Luteinizing Hormone"),
         ("Trop", "Troponin"),

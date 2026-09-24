@@ -87,6 +87,20 @@ def test_build_normalized_text_substitutes_confident_values():
     assert "staphylococcus" in normalized_text
 
 
+def test_tests_required_label_accepts_requested_and_needed_variants():
+    # Real-world bug: a dictation saying "Test requested" (not "Tests
+    # required") previously matched no label at all, so the entire test
+    # list silently vanished into whatever field preceded it (clinical_
+    # history) as unprocessed raw text — nothing was normalized, no
+    # abbreviations expanded. Locks in the fix.
+    for phrase in ("Test requested", "Tests requested", "Test needed", "Tests required"):
+        result = extract_fields(f"Clinical history, cough. {phrase}, FBC, CRP.")
+        assert "tests_required" in result, f"{phrase!r} was not recognized as a label"
+        normalized = {t["raw"]: t["normalized"] for t in result["tests_required"]}
+        assert normalized["FBC"] == "Full Blood Count"
+        assert normalized["CRP"] == "C-reactive protein"
+
+
 def test_context_threading_changes_ambiguous_candidate_ranking_not_status():
     # Proves context actually flows from clinical_history into
     # tests_required's ambiguity ranking (via extract_fields' two-pass

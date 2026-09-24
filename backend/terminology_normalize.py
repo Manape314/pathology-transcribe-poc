@@ -53,6 +53,7 @@ ABBREVIATIONS: dict[str, dict] = {
     "u&e": {"canonical_name": "Urea and Electrolytes", "domain": "chemical_pathology"},
     "u and e": {"canonical_name": "Urea and Electrolytes", "domain": "chemical_pathology"},
     "ue": {"canonical_name": "Urea and Electrolytes", "domain": "chemical_pathology"},
+    "une": {"canonical_name": "Urea and Electrolytes", "domain": "chemical_pathology"},  # common mishearing of "U and E"
     "urea and electrolytes": {"canonical_name": "Urea and Electrolytes", "domain": "chemical_pathology"},
     "fbe": {"canonical_name": "Full Blood Examination", "domain": "haematology"},
     "lft": {"canonical_name": "Liver Function Tests", "domain": "chemical_pathology"},
@@ -123,6 +124,7 @@ ABBREVIATIONS: dict[str, dict] = {
     "t4": {"canonical_name": "Free T4", "domain": "endocrine"},
     "t3": {"canonical_name": "Free T3", "domain": "endocrine"},
     "hba1c": {"canonical_name": "Glycated Haemoglobin", "domain": "endocrine"},
+    "hb1c": {"canonical_name": "Glycated Haemoglobin", "domain": "endocrine"},  # common mishearing of HbA1c
     "fbg": {"canonical_name": "Fasting Blood Glucose", "domain": "endocrine"},
     "fbs": {"canonical_name": "Fasting Blood Glucose", "domain": "endocrine"},
     "ogtt": {"canonical_name": "Oral Glucose Tolerance Test", "domain": "endocrine"},
@@ -388,6 +390,18 @@ AMBIGUOUS_ABBREVIATIONS: dict[str, list[dict]] = {
             "canonical_name": "Heart Disease",
             "domain": "clinical_diagnosis",
             "keywords": ["cardiac", "heart", "coronary"],
+        },
+    ],
+    "wb": [
+        {
+            "canonical_name": "White Cell Count",
+            "domain": "haematology",
+            "keywords": ["infection", "sepsis", "leukocytosis", "fbc"],
+        },
+        {
+            "canonical_name": "Western Blot",
+            "domain": "microbiology",
+            "keywords": ["hiv", "confirmatory", "antibody", "serology"],
         },
     ],
 }
