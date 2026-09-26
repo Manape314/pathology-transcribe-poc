@@ -120,7 +120,7 @@ def test_despace_letters_does_not_touch_ordinary_multiword_phrases():
         ("MS", {"Multiple Sclerosis", "Mitral Stenosis", "Morphine Sulphate"}),
         ("CA", {"Calcium", "Cancer"}),
         ("BS", {"Blood Sugar", "Bowel Sounds"}),
-        ("BM", {"Bone Marrow", "Blood Glucose Monitoring"}),
+        ("BM", {"Bone Marrow", "Blood Glucose Monitoring", "Bowel Movement"}),
         ("CP", {"C-Peptide", "Chest Pain"}),
         ("RA", {"Rheumatoid Arthritis", "Renal Artery Stenosis"}),
         ("MI", {"Myocardial Infarction", "Mitral Insufficiency"}),
@@ -322,6 +322,56 @@ def test_third_expansion_pass_new_lab_abbreviations(raw, expected_normalized):
     ],
 )
 def test_third_expansion_pass_new_ambiguous_abbreviations(raw, expected_candidate_names):
+    result = normalize_test_item(raw)
+    assert result["status"] == "ambiguous"
+    assert {c["canonical_name"] for c in result["candidates"]} == expected_candidate_names
+
+
+@pytest.mark.parametrize(
+    "raw, expected_normalized",
+    [
+        ("ACE", "Angiotensin-Converting Enzyme"),
+        ("CBC", "Full Blood Count"),
+        ("BMP", "Basic Metabolic Panel"),
+        ("BUN", "Blood Urea Nitrogen"),
+        ("Echo", "Echocardiogram"),
+        ("EEG", "Electroencephalogram"),
+        ("EGD", "Esophagogastroduodenoscopy"),
+        ("EMG", "Electromyogram"),
+        ("HLA", "Human Leukocyte Antigen"),
+        ("LP", "Lumbar Puncture"),
+        ("MRI", "Magnetic Resonance Imaging"),
+        ("PFT", "Pulmonary Function Test"),
+        ("PPD", "Purified Protein Derivative (Tuberculin Skin Test)"),
+        ("FFP", "Fresh Frozen Plasma"),
+    ],
+)
+def test_fourth_expansion_pass_new_lab_abbreviations(raw, expected_normalized):
+    # Cross-checked against an external medical abbreviation reference.
+    result = normalize_test_item(raw)
+    assert result["normalized"] == expected_normalized
+    assert result["status"] == "confirmed"
+
+
+@pytest.mark.parametrize(
+    "raw, expected_candidate_names",
+    [
+        ("BM", {"Bone Marrow", "Blood Glucose Monitoring", "Bowel Movement"}),
+        ("ED", {"Emergency Department", "Erectile Dysfunction"}),
+        ("IVF", {"In Vitro Fertilisation", "Intravenous Fluids"}),
+        ("PCP", {"Primary Care Provider", "Pneumocystis Pneumonia", "Phencyclidine"}),
+        ("RT", {"Respiratory Therapy", "Radiation Therapy"}),
+        ("TX", {"Treatment", "Transplant"}),
+        ("D/C", {"Discontinue", "Discharge"}),
+        ("OD", {"Once Daily", "Right Eye (Oculus Dexter)"}),
+        ("PE", {"Pulmonary Embolism", "Physical Exam"}),
+    ],
+)
+def test_fourth_expansion_pass_new_or_corrected_ambiguous_abbreviations(raw, expected_candidate_names):
+    # BM/OD/PE are corrections: an external reference revealed real
+    # additional/alternate meanings this project had previously missed or
+    # wrongly treated as unambiguous (OD as "right eye" in an ophthalmology
+    # script, PE as "physical exam") — always flagged now, never guessed.
     result = normalize_test_item(raw)
     assert result["status"] == "ambiguous"
     assert {c["canonical_name"] for c in result["candidates"]} == expected_candidate_names

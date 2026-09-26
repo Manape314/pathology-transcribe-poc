@@ -53,7 +53,6 @@ CLINICAL_ABBREVIATIONS: dict[str, dict] = {
     "copd": {"canonical_name": "Chronic Obstructive Pulmonary Disease", "domain": "clinical_diagnosis"},
     "cad": {"canonical_name": "Coronary Artery Disease", "domain": "clinical_diagnosis"},
     "cabg": {"canonical_name": "Coronary Artery Bypass Graft", "domain": "clinical_diagnosis"},
-    "pe": {"canonical_name": "Pulmonary Embolism", "domain": "clinical_diagnosis"},
     "dvt": {"canonical_name": "Deep Vein Thrombosis", "domain": "clinical_diagnosis"},
     "uti": {"canonical_name": "Urinary Tract Infection", "domain": "clinical_diagnosis"},
     "urti": {"canonical_name": "Upper Respiratory Tract Infection", "domain": "clinical_diagnosis"},
@@ -107,22 +106,117 @@ CLINICAL_ABBREVIATIONS: dict[str, dict] = {
     "arf": {"canonical_name": "Acute Renal Failure", "domain": "clinical_diagnosis"},
     "ild": {"canonical_name": "Interstitial Lung Disease", "domain": "clinical_diagnosis"},
     "n/v": {"canonical_name": "Nausea and Vomiting", "domain": "symptom"},
-    # Deliberately NOT added: "HR" for Heart Rate — collides with the very
-    # common "hr"/"hrs" abbreviation for "hour(s)" in ordinary clinical
-    # prose (e.g. "pain for 6 hrs"), which would get wrongly expanded.
-    # "RR" (Respiratory Rate vs. Regular Rhythm on cardiac exam) is
-    # genuinely ambiguous, so it lives in the shared
-    # terminology_normalize.AMBIGUOUS_ABBREVIATIONS instead.
+    # Cross-checked against an external medical abbreviation reference.
+    "acl": {"canonical_name": "Anterior Cruciate Ligament", "domain": "anatomical"},
+    "adhd": {"canonical_name": "Attention-Deficit/Hyperactivity Disorder", "domain": "clinical_diagnosis"},
+    "adl": {"canonical_name": "Activities of Daily Living", "domain": "history"},
+    "aed": {"canonical_name": "Automated External Defibrillator", "domain": "history"},
+    "afib": {"canonical_name": "Atrial Fibrillation", "domain": "clinical_diagnosis"},
+    "aids": {"canonical_name": "Acquired Immunodeficiency Syndrome", "domain": "clinical_diagnosis"},
+    "als": {"canonical_name": "Amyotrophic Lateral Sclerosis", "domain": "clinical_diagnosis"},
+    "ama": {"canonical_name": "Against Medical Advice", "domain": "history"},
+    "ami": {"canonical_name": "Acute Myocardial Infarction", "domain": "clinical_diagnosis"},
+    "ards": {"canonical_name": "Acute Respiratory Distress Syndrome", "domain": "clinical_diagnosis"},
+    "bcg": {"canonical_name": "Bacillus Calmette-Guerin (Vaccine)", "domain": "vaccination_history"},
+    "bmr": {"canonical_name": "Basal Metabolic Rate", "domain": "clinical_finding"},
+    "bph": {"canonical_name": "Benign Prostatic Hyperplasia", "domain": "clinical_diagnosis"},
+    "c/o": {"canonical_name": "Complains of", "domain": "history"},
+    "cc": {"canonical_name": "Chief Complaint", "domain": "history"},
+    "cns": {"canonical_name": "Central Nervous System", "domain": "anatomical"},
+    "cpap": {"canonical_name": "Continuous Positive Airway Pressure", "domain": "history"},
+    "cpr": {"canonical_name": "Cardiopulmonary Resuscitation", "domain": "history"},
+    "csf": {"canonical_name": "Cerebrospinal Fluid", "domain": "anatomical"},
+    "dnr": {"canonical_name": "Do Not Resuscitate", "domain": "clinical_instruction"},
+    "doa": {"canonical_name": "Dead on Arrival", "domain": "clinical_finding"},
+    "dx": {"canonical_name": "Diagnosis", "domain": "history"},
+    "ems": {"canonical_name": "Emergency Medical Services", "domain": "history"},
+    "ent": {"canonical_name": "Ear, Nose, and Throat", "domain": "anatomical"},
+    "fhr": {"canonical_name": "Fetal Heart Rate", "domain": "obstetric"},
+    "fx": {"canonical_name": "Fracture", "domain": "clinical_diagnosis"},
+    "gi": {"canonical_name": "Gastrointestinal", "domain": "anatomical"},
+    "heent": {"canonical_name": "Head, Eyes, Ears, Nose, and Throat", "domain": "history"},
+    "hx": {"canonical_name": "History", "domain": "history"},
+    "i&o": {"canonical_name": "Intakes and Outputs", "domain": "monitoring"},
+    "icu": {"canonical_name": "Intensive Care Unit", "domain": "history"},
+    "iddm": {"canonical_name": "Type 1 Diabetes Mellitus", "domain": "clinical_diagnosis"},  # older term
+    "iop": {"canonical_name": "Intraocular Pressure", "domain": "ophthalmology"},
+    "jvd": {"canonical_name": "Jugular Venous Distension", "domain": "clinical_finding"},
+    "l&d": {"canonical_name": "Labor and Delivery", "domain": "obstetric"},
+    "llq": {"canonical_name": "Left Lower Quadrant", "domain": "anatomical"},
+    "luq": {"canonical_name": "Left Upper Quadrant", "domain": "anatomical"},
+    "lvad": {"canonical_name": "Left Ventricular Assist Device", "domain": "cardiac"},
+    "mdr-tb": {"canonical_name": "Multidrug-Resistant Tuberculosis", "domain": "clinical_diagnosis"},
+    "mmr": {"canonical_name": "Measles, Mumps, and Rubella (Vaccine)", "domain": "vaccination_history"},
+    "mrsa": {"canonical_name": "Methicillin-Resistant Staphylococcus Aureus", "domain": "microbiology"},
+    "mvp": {"canonical_name": "Mitral Valve Prolapse", "domain": "clinical_diagnosis"},
+    "niddm": {"canonical_name": "Type 2 Diabetes Mellitus", "domain": "clinical_diagnosis"},  # older term
+    "npo": {"canonical_name": "Nil by Mouth", "domain": "clinical_instruction"},
+    "nsr": {"canonical_name": "Normal Sinus Rhythm", "domain": "clinical_finding"},
+    "pac": {"canonical_name": "Premature Atrial Contraction", "domain": "cardiac"},
+    "pku": {"canonical_name": "Phenylketonuria", "domain": "clinical_diagnosis"},
+    "pns": {"canonical_name": "Peripheral Nervous System", "domain": "anatomical"},
+    "ppe": {"canonical_name": "Personal Protective Equipment", "domain": "infection_control"},
+    "px": {"canonical_name": "Prognosis", "domain": "history"},
+    "rds": {"canonical_name": "Respiratory Distress Syndrome (Neonatal)", "domain": "clinical_diagnosis"},
+    "rem": {"canonical_name": "Rapid Eye Movement (Sleep)", "domain": "history"},
+    "rlq": {"canonical_name": "Right Lower Quadrant", "domain": "anatomical"},
+    "rmr": {"canonical_name": "Resting Metabolic Rate", "domain": "clinical_finding"},
+    "ros": {"canonical_name": "Review of Systems", "domain": "history"},
+    "ruq": {"canonical_name": "Right Upper Quadrant", "domain": "anatomical"},
+    "rx": {"canonical_name": "Prescription/Treatment", "domain": "history"},
+    "sao2": {"canonical_name": "Oxygen Saturation", "domain": "vital_sign"},
+    "sids": {"canonical_name": "Sudden Infant Death Syndrome", "domain": "clinical_diagnosis"},
+    "sirs": {"canonical_name": "Systemic Inflammatory Response Syndrome", "domain": "clinical_diagnosis"},
+    "sle": {"canonical_name": "Systemic Lupus Erythematosus", "domain": "clinical_diagnosis"},
+    "snf": {"canonical_name": "Skilled Nursing Facility", "domain": "history"},
+    "std": {"canonical_name": "Sexually Transmitted Disease", "domain": "clinical_diagnosis"},
+    "sti": {"canonical_name": "Sexually Transmitted Infection", "domain": "clinical_diagnosis"},
+    "sx": {"canonical_name": "Symptoms", "domain": "history"},
+    "tah": {"canonical_name": "Total Abdominal Hysterectomy", "domain": "history"},
+    "tbi": {"canonical_name": "Traumatic Brain Injury", "domain": "clinical_diagnosis"},
+    "tmj": {"canonical_name": "Temporomandibular Joint", "domain": "anatomical"},
+    "tpr": {"canonical_name": "Temperature, Pulse, and Respiration", "domain": "vital_sign"},
+    "uri": {"canonical_name": "Upper Respiratory Tract Infection", "domain": "clinical_diagnosis"},
+    "vsd": {"canonical_name": "Ventricular Septal Defect", "domain": "clinical_diagnosis"},
+    "vre": {"canonical_name": "Vancomycin-Resistant Enterococcus", "domain": "microbiology"},
+    "vtach": {"canonical_name": "Ventricular Tachycardia", "domain": "cardiac"},
+    "wnl": {"canonical_name": "Within Normal Limits", "domain": "clinical_finding"},
+    "xrt": {"canonical_name": "External Beam Radiation Therapy", "domain": "oncology"},
+    "yf": {"canonical_name": "Yellow Fever", "domain": "clinical_diagnosis"},
+    "ze": {"canonical_name": "Zollinger-Ellison Syndrome", "domain": "clinical_diagnosis"},
+    # Deliberately NOT added — real collision risk with ordinary English
+    # words/filler or units, confirmed against the same reference:
+    #   HR  (Heart Rate) collides with "hr/hrs" = hour(s)
+    #   AKA (Above-Knee Amputation) collides with "also known as"
+    #   OR  (Operating Room) collides with the conjunction "or"
+    #   OT  (Occupational Therapy) collides with "overtime"
+    #   ER  (Emergency Room) collides with the speech filler "er"
+    #   PAD (Peripheral Artery Disease) collides with the word "pad"
+    #   MAP (Mean Arterial Pressure) collides with the word "map"
+    #   MM  (Multiple Myeloma / Malignant Melanoma) collides with the
+    #       millimetre unit ("the lesion measures 15 mm")
+    #   US  (Ultrasound) collides with the pronoun "us"
+    #   WHO (World Health Organization) collides with the question word "who"
+    #   PT  (Physical Therapy) collides with "patient" shorthand — kept
+    #       unambiguous in terminology_normalize.ABBREVIATIONS instead,
+    #       where it's safe (tests_required matches a whole list item,
+    #       never scans free prose)
+    # "RR" (Respiratory Rate vs. Regular Rhythm on cardiac exam), "PCP",
+    # "ED", "PE", "TX", "RT" and others ARE genuinely ambiguous and live in
+    # the shared terminology_normalize.AMBIGUOUS_ABBREVIATIONS instead.
 }
 
 # Dosing/route/frequency shorthand — a third, distinct vocabulary domain
-# from both lab tests and clinical diagnoses. Real dosing shorthand in
-# common use doesn't have competing medical meanings the way TB/DM/MS do,
-# so there's no AMBIGUOUS_MEDICATION_ABBREVIATIONS dict yet; one could be
-# added later with zero changes to resolve_field_text().
+# from both lab tests and clinical diagnoses. Most real dosing shorthand
+# doesn't have competing medical meanings the way TB/DM/MS do, so there's
+# no full AMBIGUOUS_MEDICATION_ABBREVIATIONS dict — but "OD" is a real
+# exception (once daily vs. "right eye" in an ophthalmology prescription,
+# per an external medical abbreviation reference), so it lives in the
+# shared terminology_normalize.AMBIGUOUS_ABBREVIATIONS instead, not here.
 MEDICATION_ABBREVIATIONS: dict[str, dict] = {
-    "od": {"canonical_name": "Once Daily", "domain": "dosing_frequency"},
     "bd": {"canonical_name": "Twice Daily", "domain": "dosing_frequency"},
+    "bid": {"canonical_name": "Twice Daily", "domain": "dosing_frequency"},  # US usage
+    "qd": {"canonical_name": "Once Daily", "domain": "dosing_frequency"},
     "tds": {"canonical_name": "Three Times Daily", "domain": "dosing_frequency"},
     "tid": {"canonical_name": "Three Times Daily", "domain": "dosing_frequency"},
     "qds": {"canonical_name": "Four Times Daily", "domain": "dosing_frequency"},
@@ -146,6 +240,9 @@ MEDICATION_ABBREVIATIONS: dict[str, dict] = {
     "supp": {"canonical_name": "Suppository", "domain": "dosing_form"},
     "neb": {"canonical_name": "Nebulised", "domain": "dosing_route"},
     "ng": {"canonical_name": "Nasogastric", "domain": "dosing_route"},
+    "qh": {"canonical_name": "Every Hour", "domain": "dosing_frequency"},
+    "os": {"canonical_name": "Left Eye (Oculus Sinister)", "domain": "dosing_route"},
+    "ou": {"canonical_name": "Both Eyes (Oculus Uterque)", "domain": "dosing_route"},
     "ppi": {"canonical_name": "Proton Pump Inhibitor", "domain": "drug_class"},
     "nsaid": {"canonical_name": "Non-Steroidal Anti-Inflammatory Drug", "domain": "drug_class"},
     "acei": {"canonical_name": "ACE Inhibitor", "domain": "drug_class"},
@@ -153,6 +250,7 @@ MEDICATION_ABBREVIATIONS: dict[str, dict] = {
     "ccb": {"canonical_name": "Calcium Channel Blocker", "domain": "drug_class"},
     "abx": {"canonical_name": "Antibiotics", "domain": "drug_class"},
     "coc": {"canonical_name": "Combined Oral Contraceptive", "domain": "drug_class"},
+    "asa": {"canonical_name": "Acetylsalicylic Acid (Aspirin)", "domain": "drug_name"},
     # Deliberately NOT added: "top" for "Topically" — collides with the
     # ordinary phrase "top dose" (e.g. "furosemide top dose reached"),
     # which would get wrongly expanded. Spell out "topically" instead.
@@ -235,6 +333,28 @@ def _resolve_clinical_term(
 
 
 _FIELD_REGEX_CACHE: dict[int, re.Pattern] = {}
+_ALPHA_KEY_RE = re.compile(r"^[a-z]+$")
+
+
+def _key_pattern(key: str) -> str:
+    """Builds one dictionary key's match fragment. Pure-alpha keys ("po",
+    "prn", "sob") tolerate spoken/punctuated letter-by-letter forms
+    ("P.O.", "P-R-N", "S O B") — real dictation regularly renders spoken
+    abbreviations this way (confirmed: Whisper transcribed "PO OD" as
+    "P-O-O-D" in testing), and text_normalize.abbrev_key already collapses
+    whatever this matches back into the plain key for dictionary lookup —
+    this just teaches the SCAN regex to find those forms in free text in
+    the first place. Each letter may be followed by an optional "."/"-"
+    and optional whitespace before the next; the whole thing is bounded so
+    it can't match inside or across ordinary words (e.g. "of" can't match
+    "o" from a "po"/"od" pattern, since "f" isn't an allowed separator).
+    Keys containing digits or symbols ("co2", "d-dimer", "d/c") use plain
+    literal word-boundary matching instead — spelling those out
+    letter-by-letter isn't a real dictation pattern."""
+    if _ALPHA_KEY_RE.match(key):
+        letters = r"[.\-]?\s*".join(re.escape(c) for c in key)
+        return r"(?<![A-Za-z])" + letters + r"[.\-]?(?![A-Za-z])"
+    return r"\b" + re.escape(key) + r"\b"
 
 
 def _field_regex(unambiguous_dict: dict) -> re.Pattern:
@@ -245,7 +365,7 @@ def _field_regex(unambiguous_dict: dict) -> re.Pattern:
             key=len,
             reverse=True,
         )
-        pattern = r"\b(?:" + "|".join(re.escape(k) for k in keys) + r")\b"
+        pattern = "|".join(f"(?:{_key_pattern(k)})" for k in keys)
         _FIELD_REGEX_CACHE[cache_key] = re.compile(pattern, re.IGNORECASE)
     return _FIELD_REGEX_CACHE[cache_key]
 
@@ -301,7 +421,14 @@ def resolve_field_text(
         if resolution is None:
             continue
 
-        pieces.append(raw_text[last_end : m.start()])
+        gap = raw_text[last_end : m.start()]
+        if gap and re.fullmatch(r"[.\-]+", gap):
+            # Two spelled-out abbreviations glued together with no space
+            # ("P.O.,O.D." transcribed as one run) leave a bare punctuation
+            # leftover between them once each claims its own letters —
+            # render it as a plain space instead of a stray "-"/".".
+            gap = " "
+        pieces.append(gap)
         if resolution["status"] == "confirmed":
             if raw_phrase.strip().lower() != resolution["normalized_term"].strip().lower():
                 pieces.append(f"{resolution['normalized_term']} ({raw_phrase})")

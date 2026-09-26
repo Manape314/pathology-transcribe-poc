@@ -36,7 +36,6 @@ def test_case_insensitive_and_lowercase_forms():
         ("COPD", "Chronic Obstructive Pulmonary Disease"),
         ("UTI", "Urinary Tract Infection"),
         ("DVT", "Deep Vein Thrombosis"),
-        ("PE", "Pulmonary Embolism"),
         ("PMH", "Past Medical History"),
         ("NKDA", "No Known Drug Allergies"),
     ],
@@ -137,7 +136,6 @@ def test_mixed_confirmed_ambiguous_and_plain_prose():
     [
         ("PRN", "As Needed"),
         ("BD", "Twice Daily"),
-        ("OD", "Once Daily"),
         ("IV", "Intravenous"),
         ("PO", "By Mouth"),
         ("STAT", "Immediately"),
@@ -271,6 +269,148 @@ def test_ct_is_ambiguous_not_unambiguously_computed_tomography():
 def test_medication_field_end_to_end():
     result = resolve_field_text("paracetamol, 1 gram PRN", "medication", MEDICATION_ABBREVIATIONS)
     assert result["value"] == "paracetamol, 1 gram As Needed (PRN)"
+
+
+# --------------------------------------------------------------------------- #
+# Spelled-out forms in free text ("P.O.", "P-R-N", "S O B") — the real bug
+# hit in testing: Whisper transcribed dictated "PO OD" as "P-O-O-D", which
+# the plain word-boundary regex couldn't recognize at all.
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        ("P.O.", "By Mouth"),
+        ("P-O", "By Mouth"),
+        ("P O", "By Mouth"),
+        ("p.o.", "By Mouth"),
+    ],
+)
+def test_spelled_out_forms_are_recognized_in_medication_field(raw, expected):
+    result = resolve_field_text(raw, "medication", MEDICATION_ABBREVIATIONS)
+    assert result["resolved_terms"], f"{raw!r} was not recognized"
+    assert result["resolved_terms"][0]["normalized_term"] == expected
+
+
+def test_spelled_out_forms_preserve_original_raw_phrase_in_output():
+    # The bracketed display keeps exactly what was heard, not a collapsed
+    # form — "By Mouth (P.O.)", never "By Mouth (po)".
+    result = resolve_field_text("P.O.", "medication", MEDICATION_ABBREVIATIONS)
+    assert result["value"] == "By Mouth (P.O.)"
+
+
+def test_reproduces_the_original_po_od_bug_report():
+    # The exact real-world sequence that surfaced this gap: Whisper
+    # rendered dictated "PO OD" as "P-O-O-D" — which correctly splits into
+    # "P-O" and "O-D" (the middle hyphen is the shared boundary between
+    # the two abbreviations, consumed by neither).
+    result = resolve_field_text("P-O-O-D", "medication", MEDICATION_ABBREVIATIONS)
+    terms = {t["raw_phrase"]: t["normalized_term"] for t in result["resolved_terms"]}
+    assert terms.get("P-O") == "By Mouth"
+    # "OD" is now genuinely ambiguous (Once Daily vs. Right Eye) rather
+    # than auto-expanded — confirm it's flagged, not silently guessed.
+    ambiguous_raw = [t["raw_phrase"] for t in result["resolved_terms"] if t["status"] == "ambiguous"]
+    assert "O-D" in ambiguous_raw
+
+
+def test_spelled_out_form_does_not_match_across_unrelated_words():
+    # "is on break" must NOT be mis-parsed as a spelled-out abbreviation
+    # just because it contains isolated letters in a similar pattern.
+    result = resolve_field_text(
+        "patient is on breakthrough pain medication", "clinical_history", CLINICAL_ABBREVIATIONS
+    )
+    assert result["resolved_terms"] == []
+    assert result["value"] == result["raw"]
+
+
+# --------------------------------------------------------------------------- #
+# New entries cross-checked against an external medical abbreviation
+# reference (also caught the OD/PE/BM corrections above).
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        ("ACL", "Anterior Cruciate Ligament"),
+        ("ADHD", "Attention-Deficit/Hyperactivity Disorder"),
+        ("ADL", "Activities of Daily Living"),
+        ("AFib", "Atrial Fibrillation"),
+        ("AIDS", "Acquired Immunodeficiency Syndrome"),
+        ("ALS", "Amyotrophic Lateral Sclerosis"),
+        ("AMA", "Against Medical Advice"),
+        ("AMI", "Acute Myocardial Infarction"),
+        ("ARDS", "Acute Respiratory Distress Syndrome"),
+        ("CC", "Chief Complaint"),
+        ("CNS", "Central Nervous System"),
+        ("CPR", "Cardiopulmonary Resuscitation"),
+        ("CSF", "Cerebrospinal Fluid"),
+        ("DNR", "Do Not Resuscitate"),
+        ("Dx", "Diagnosis"),
+        ("ENT", "Ear, Nose, and Throat"),
+        ("FX", "Fracture"),
+        ("GI", "Gastrointestinal"),
+        ("HX", "History"),
+        ("ICU", "Intensive Care Unit"),
+        ("MRSA", "Methicillin-Resistant Staphylococcus Aureus"),
+        ("MVP", "Mitral Valve Prolapse"),
+        ("NPO", "Nil by Mouth"),
+        ("NSR", "Normal Sinus Rhythm"),
+        ("ROS", "Review of Systems"),
+        ("RX", "Prescription/Treatment"),
+        ("SIDS", "Sudden Infant Death Syndrome"),
+        ("SLE", "Systemic Lupus Erythematosus"),
+        ("STD", "Sexually Transmitted Disease"),
+        ("Sx", "Symptoms"),
+        ("TBI", "Traumatic Brain Injury"),
+        ("VSD", "Ventricular Septal Defect"),
+        ("VTach", "Ventricular Tachycardia"),
+        ("WNL", "Within Normal Limits"),
+    ],
+)
+def test_fourth_expansion_pass_new_clinical_abbreviations(raw, expected):
+    result = resolve_field_text(raw, "clinical_history", CLINICAL_ABBREVIATIONS)
+    assert result["resolved_terms"][0]["normalized_term"] == expected
+
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        ("BID", "Twice Daily"),
+        ("QD", "Once Daily"),
+        ("QH", "Every Hour"),
+        ("OS", "Left Eye (Oculus Sinister)"),
+        ("OU", "Both Eyes (Oculus Uterque)"),
+        ("ASA", "Acetylsalicylic Acid (Aspirin)"),
+    ],
+)
+def test_fourth_expansion_pass_new_medication_abbreviations(raw, expected):
+    result = resolve_field_text(raw, "medication", MEDICATION_ABBREVIATIONS)
+    assert result["resolved_terms"][0]["normalized_term"] == expected
+
+
+# --------------------------------------------------------------------------- #
+# Deliberately-skipped collision-risk abbreviations from the same
+# reference — confirm they are NOT expanded/flagged at all.
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    "sentence",
+    [
+        "patient AKA presented for a routine check",  # AKA = "also known as"
+        "discussed treatment options or referral",  # OR = conjunction
+        "please send us the report",  # US = pronoun
+        "unclear who ordered the test",  # WHO = question word
+        "the lesion measures 15 mm in diameter",  # MM = millimetre unit
+        "the mass was estimated at 20 mm",  # MM again, different phrasing
+    ],
+)
+def test_collision_risk_abbreviations_are_never_expanded(sentence):
+    result = resolve_field_text(sentence, "clinical_history", CLINICAL_ABBREVIATIONS)
+    assert result["resolved_terms"] == []
+    assert result["value"] == result["raw"]
 
 
 def test_medication_ms_is_still_ambiguous_not_auto_resolved_to_morphine_sulphate():

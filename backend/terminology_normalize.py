@@ -223,6 +223,21 @@ ABBREVIATIONS: dict[str, dict] = {
     "cort": {"canonical_name": "Cortisol", "domain": "endocrine"},
     "prl": {"canonical_name": "Prolactin", "domain": "endocrine"},
     "fol": {"canonical_name": "Folate", "domain": "haematology"},
+    # Cross-checked against an external medical abbreviation reference.
+    "ace": {"canonical_name": "Angiotensin-Converting Enzyme", "domain": "chemical_pathology"},
+    "cbc": {"canonical_name": "Full Blood Count", "domain": "haematology"},  # US usage
+    "bmp": {"canonical_name": "Basic Metabolic Panel", "domain": "chemical_pathology"},
+    "bun": {"canonical_name": "Blood Urea Nitrogen", "domain": "chemical_pathology"},
+    "echo": {"canonical_name": "Echocardiogram", "domain": "cardiac"},
+    "eeg": {"canonical_name": "Electroencephalogram", "domain": "neurology"},
+    "egd": {"canonical_name": "Esophagogastroduodenoscopy", "domain": "gastroenterology"},
+    "emg": {"canonical_name": "Electromyogram", "domain": "neurology"},
+    "hla": {"canonical_name": "Human Leukocyte Antigen", "domain": "immunology"},
+    "lp": {"canonical_name": "Lumbar Puncture", "domain": "procedure"},
+    "mri": {"canonical_name": "Magnetic Resonance Imaging", "domain": "radiology"},
+    "pft": {"canonical_name": "Pulmonary Function Test", "domain": "respiratory"},
+    "ppd": {"canonical_name": "Purified Protein Derivative (Tuberculin Skin Test)", "domain": "microbiology"},
+    "ffp": {"canonical_name": "Fresh Frozen Plasma", "domain": "blood_bank"},
     # NOTE: the genuinely ambiguous abbreviations (TB, UA, PCR, MS, CA, BS,
     # BM, CP, RA, MI, CVA, PID, DM, CF, HD, ...) are NOT here — they live in
     # AMBIGUOUS_ABBREVIATIONS below instead, so they're never silently
@@ -347,6 +362,11 @@ AMBIGUOUS_ABBREVIATIONS: dict[str, list[dict]] = {
             "canonical_name": "Blood Glucose Monitoring",
             "domain": "endocrine",
             "keywords": ["diabetes", "glucose", "insulin", "monitoring"],
+        },
+        {
+            "canonical_name": "Bowel Movement",
+            "domain": "clinical_diagnosis",
+            "keywords": ["bowel", "stool", "constipation", "diarrhoea"],
         },
     ],
     "cp": [
@@ -561,6 +581,115 @@ AMBIGUOUS_ABBREVIATIONS: dict[str, list[dict]] = {
             "canonical_name": "Positron Emission Tomography",
             "domain": "radiology",
             "keywords": ["scan", "imaging", "oncology", "staging"],
+        },
+    ],
+    # The following were cross-checked against an external medical
+    # abbreviation reference and added/corrected because that source
+    # explicitly documents more than one legitimate meaning — including
+    # two corrections to entries this project previously (incorrectly)
+    # treated as unambiguous: "od" (moved out of medication dosing —
+    # in an ophthalmology prescription it means "right eye", not "once
+    # daily") and "pe" (moved out of clinical diagnosis — "physical
+    # exam" is at least as common a reading as "pulmonary embolism").
+    "ed": [
+        {
+            "canonical_name": "Emergency Department",
+            "domain": "clinical_diagnosis",
+            "keywords": ["emergency", "trauma", "admission", "triage"],
+        },
+        {
+            "canonical_name": "Erectile Dysfunction",
+            "domain": "clinical_diagnosis",
+            "keywords": ["sexual", "urology", "impotence"],
+        },
+    ],
+    "ivf": [
+        {
+            "canonical_name": "In Vitro Fertilisation",
+            "domain": "clinical_diagnosis",
+            "keywords": ["fertility", "reproductive", "pregnancy", "embryo"],
+        },
+        {
+            "canonical_name": "Intravenous Fluids",
+            "domain": "medication",
+            "keywords": ["hydration", "drip", "fluid", "infusion"],
+        },
+    ],
+    "pcp": [
+        {
+            "canonical_name": "Primary Care Provider",
+            "domain": "history",
+            "keywords": ["referral", "gp", "family physician"],
+        },
+        {
+            "canonical_name": "Pneumocystis Pneumonia",
+            "domain": "clinical_diagnosis",
+            "keywords": ["hiv", "immunocompromised", "pneumonia", "respiratory"],
+        },
+        {
+            "canonical_name": "Phencyclidine",
+            "domain": "toxicology",
+            "keywords": ["overdose", "toxicology", "substance", "intoxication"],
+        },
+    ],
+    "rt": [
+        {
+            "canonical_name": "Respiratory Therapy",
+            "domain": "clinical_diagnosis",
+            "keywords": ["respiratory", "ventilator", "oxygen", "breathing"],
+        },
+        {
+            "canonical_name": "Radiation Therapy",
+            "domain": "oncology",
+            "keywords": ["oncology", "radiotherapy", "tumour", "cancer"],
+        },
+    ],
+    "tx": [
+        {
+            "canonical_name": "Treatment",
+            "domain": "history",
+            "keywords": ["therapy", "management", "regimen"],
+        },
+        {
+            "canonical_name": "Transplant",
+            "domain": "clinical_diagnosis",
+            "keywords": ["organ", "graft", "donor", "rejection"],
+        },
+    ],
+    "d/c": [
+        {
+            "canonical_name": "Discontinue",
+            "domain": "medication",
+            "keywords": ["stop", "cease", "withdrawn"],
+        },
+        {
+            "canonical_name": "Discharge",
+            "domain": "history",
+            "keywords": ["home", "discharged", "outpatient"],
+        },
+    ],
+    "od": [
+        {
+            "canonical_name": "Once Daily",
+            "domain": "dosing_frequency",
+            "keywords": ["daily", "frequency", "dose"],
+        },
+        {
+            "canonical_name": "Right Eye (Oculus Dexter)",
+            "domain": "dosing_route",
+            "keywords": ["eye", "ophthalmology", "ocular", "drops"],
+        },
+    ],
+    "pe": [
+        {
+            "canonical_name": "Pulmonary Embolism",
+            "domain": "clinical_diagnosis",
+            "keywords": ["chest pain", "dyspnoea", "clot", "dvt", "sob"],
+        },
+        {
+            "canonical_name": "Physical Exam",
+            "domain": "history",
+            "keywords": ["examination", "findings", "unremarkable"],
         },
     ],
 }
