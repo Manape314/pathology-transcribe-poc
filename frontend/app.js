@@ -19,41 +19,12 @@ const testsEmpty = document.getElementById("testsEmpty");
 const confirmTestsBtn = document.getElementById("confirmTestsBtn");
 const skipTestsBtn = document.getElementById("skipTestsBtn");
 
-// Independent confirmation panels for ambiguous clinical/medication
-// abbreviations — one per field, separate from Tests required's panel
-// and from each other. Confirmed (unambiguous) expansions need no
-// action here: they're already shown inline in the transcript.
-const FIELD_PANELS = [
-  {
-    field: "clinical_history",
-    label: "Clinical history",
-    sectionId: "clinicalHistorySection",
-    listId: "clinicalHistoryList",
-    confirmId: "confirmClinicalHistoryBtn",
-    skipId: "skipClinicalHistoryBtn",
-  },
-  {
-    field: "provisional_diagnosis",
-    label: "Provisional diagnosis",
-    sectionId: "provisionalDiagnosisSection",
-    listId: "provisionalDiagnosisList",
-    confirmId: "confirmProvisionalDiagnosisBtn",
-    skipId: "skipProvisionalDiagnosisBtn",
-  },
-  {
-    field: "medication",
-    label: "Medication",
-    sectionId: "medicationSection",
-    listId: "medicationList",
-    confirmId: "confirmMedicationBtn",
-    skipId: "skipMedicationBtn",
-  },
-];
-
 let lastTestsRequired = []; // the tests_required items currently rendered
 let currentNormalizedText = "";
 let currentRawText = "";
 let showingRaw = false;
+let currentStructured = {}; // the full structured object from the last transcription
+let currentEntryId = null; // the History entry id the current transcript is saved under
 
 let mediaRecorder = null; // the active MediaRecorder, when recording
 let chunks = []; // audio Blob pieces collected during a recording
@@ -74,7 +45,7 @@ recordBtn.addEventListener("click", async () => {
 
 async function startRecording() {
   hideTests();
-  fieldPanelControllers.forEach((p) => p.hide());
+  closeAmbiguousPopup();
   resetTranscriptView();
 
   try {
@@ -146,19 +117,15 @@ async function sendForTranscription(blob) {
 
     currentNormalizedText = data.normalized_text || data.raw_text || "";
     currentRawText = data.raw_text || "";
+    currentStructured = data.structured || {};
     showingRaw = false;
     updateTranscriptView();
 
-    const structured = data.structured || {};
-    const entryId = currentNormalizedText
+    currentEntryId = currentNormalizedText
       ? addHistoryEntry(currentNormalizedText, currentRawText)
       : null;
-    if (entryId) {
-      renderTests(entryId, structured.tests_required || []);
-      fieldPanelControllers.forEach((p) => {
-        const field = structured[p.config.field] || {};
-        p.render(entryId, field.resolved_terms || []);
-      });
+    if (currentEntryId) {
+      renderTests(currentEntryId, currentStructured.tests_required || []);
     }
 
     setStatus(
@@ -170,9 +137,111 @@ async function sendForTranscription(blob) {
   }
 }
 
+function escapeHtml(s) {
+  const div = document.createElement("div");
+  div.textContent = s;
+  return div.innerHTML;
+}
+
+// Every ambiguous abbreviation anywhere in the current structured result —
+// regardless of which field it came from (clinical_history,
+// provisional_diagnosis, tests_required, medication) — gets ONE consistent
+// treatment: it's highlighted directly in the transcript text, and clicking
+// it pops up its candidate list right there. This replaces separate
+// below-transcript panels for each field with a single, discoverable
+// interaction.
+//
+// Order matters here: it MUST match the field order build_normalized_text
+// (backend/field_extraction.py's _DISPLAY_FIELDS) actually writes the
+// transcript in — clinical_history, provisional_diagnosis, tests_required,
+// medication — so that if the SAME abbreviation is ambiguous in two
+// different fields (e.g. "TB" in both Provisional diagnosis and Tests
+// required), the two identical marker strings in the text get paired up
+// with the right underlying item, not swapped.
+function collectAmbiguousItems() {
+  const items = [];
+  // Tracks, per distinct marker STRING, how many times we've seen it so
+  // far in this pass — gives each entry an `occurrenceIndex` (its 0-based
+  // position among identical markers) which both rendering and resolution
+  // use to target the correct occurrence, never a blanket replace-all.
+  const occurrenceCounters = new Map();
+
+  function pushEntry(field, raw, candidates, item) {
+    const marker = `${raw} [ambiguous — please confirm]`;
+    const occurrenceIndex = occurrenceCounters.get(marker) || 0;
+    occurrenceCounters.set(marker, occurrenceIndex + 1);
+    items.push({ field, raw, candidates, item, marker, occurrenceIndex });
+  }
+
+  ["clinical_history", "provisional_diagnosis"].forEach((field) => {
+    const resolvedTerms = (currentStructured[field] || {}).resolved_terms || [];
+    resolvedTerms.forEach((item) => {
+      if (item.status === "ambiguous") pushEntry(field, item.raw_phrase, item.candidates, item);
+    });
+  });
+
+  (currentStructured.tests_required || []).forEach((item) => {
+    if (item.status === "ambiguous") pushEntry("tests_required", item.raw, item.candidates, item);
+  });
+
+  const medicationTerms = (currentStructured.medication || {}).resolved_terms || [];
+  medicationTerms.forEach((item) => {
+    if (item.status === "ambiguous") pushEntry("medication", item.raw_phrase, item.candidates, item);
+  });
+
+  return items;
+}
+
+// Finds the start index of the (n+1)th occurrence of `needle` in
+// `haystack` (0-based `n`), or -1 if there aren't that many.
+function nthIndexOf(haystack, needle, n) {
+  let from = 0;
+  for (let i = 0; i < n; i++) {
+    const pos = haystack.indexOf(needle, from);
+    if (pos === -1) return -1;
+    from = pos + needle.length;
+  }
+  return haystack.indexOf(needle, from);
+}
+
+const ambiguousItemsById = new Map();
+
+function renderNormalizedHtml(text) {
+  const escaped = escapeHtml(text);
+  const ambiguousItems = collectAmbiguousItems();
+  ambiguousItemsById.clear();
+
+  const insertions = [];
+  ambiguousItems.forEach((entry, index) => {
+    const escapedMarker = escapeHtml(entry.marker);
+    const pos = nthIndexOf(escaped, escapedMarker, entry.occurrenceIndex);
+    if (pos === -1) return; // not present in the current text — nothing to highlight
+    const id = `amb-${index}`;
+    ambiguousItemsById.set(id, entry);
+    insertions.push({ start: pos, end: pos + escapedMarker.length, id, html: escapedMarker });
+  });
+
+  insertions.sort((a, b) => a.start - b.start);
+
+  let html = "";
+  let cursor = 0;
+  insertions.forEach(({ start, end, id, html: markerHtml }) => {
+    html += escaped.slice(cursor, start);
+    html += `<span class="ambiguous-highlight" data-amb-id="${id}" tabindex="0" role="button">${markerHtml}</span>`;
+    cursor = end;
+  });
+  html += escaped.slice(cursor);
+  return html;
+}
+
 function updateTranscriptView() {
-  transcriptEl.textContent =
-    (showingRaw ? currentRawText : currentNormalizedText) || "(no speech detected)";
+  if (showingRaw) {
+    transcriptEl.textContent = currentRawText || "(no speech detected)";
+  } else if (currentNormalizedText) {
+    transcriptEl.innerHTML = renderNormalizedHtml(currentNormalizedText);
+  } else {
+    transcriptEl.textContent = "(no speech detected)";
+  }
   toggleRawBtn.textContent = showingRaw
     ? "View normalized transcript"
     : "View raw transcript";
@@ -181,6 +250,8 @@ function updateTranscriptView() {
 function resetTranscriptView() {
   currentNormalizedText = "";
   currentRawText = "";
+  currentStructured = {};
+  currentEntryId = null;
   showingRaw = false;
   transcriptEl.textContent = "—";
   toggleRawBtn.textContent = "View raw transcript";
@@ -190,6 +261,141 @@ toggleRawBtn.addEventListener("click", () => {
   showingRaw = !showingRaw;
   updateTranscriptView();
 });
+
+// ---------------------------------------------------------------------------
+// Inline ambiguous-term click-to-choose popup
+// ---------------------------------------------------------------------------
+
+let activePopup = null;
+let dismissPopupListener = null;
+
+function closeAmbiguousPopup() {
+  if (activePopup) {
+    activePopup.remove();
+    activePopup = null;
+  }
+  if (dismissPopupListener) {
+    document.removeEventListener("click", dismissPopupListener, true);
+    dismissPopupListener = null;
+  }
+}
+
+transcriptEl.addEventListener("click", (e) => {
+  const span = e.target.closest(".ambiguous-highlight");
+  if (!span) return;
+  e.stopPropagation();
+  const entry = ambiguousItemsById.get(span.dataset.ambId);
+  if (entry) {
+    openAmbiguousPopup(span, entry);
+  }
+});
+
+function openAmbiguousPopup(anchorEl, entry) {
+  closeAmbiguousPopup();
+
+  const popup = document.createElement("div");
+  popup.className = "ambiguous-popup";
+
+  const title = document.createElement("p");
+  title.className = "ambiguous-popup-title";
+  title.textContent = `"${entry.raw}" — which did you mean?`;
+  popup.appendChild(title);
+
+  const list = document.createElement("div");
+  list.className = "ambiguous-popup-list";
+
+  entry.candidates.forEach((cand) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "ambiguous-popup-option";
+
+    const name = document.createElement("span");
+    name.className = "option-name";
+    name.textContent = cand.canonical_name;
+    btn.appendChild(name);
+
+    const detail = document.createElement("span");
+    detail.className = "option-detail";
+    detail.textContent = `${cand.domain.replace(/_/g, " ")} — ${cand.reason}`;
+    btn.appendChild(detail);
+
+    btn.addEventListener("click", () => resolveAmbiguousItem(entry, cand));
+    list.appendChild(btn);
+  });
+
+  const noneBtn = document.createElement("button");
+  noneBtn.type = "button";
+  noneBtn.className = "ambiguous-popup-option none-option";
+  const noneName = document.createElement("span");
+  noneName.className = "option-name";
+  noneName.textContent = "None of these / keep original";
+  noneBtn.appendChild(noneName);
+  noneBtn.addEventListener("click", closeAmbiguousPopup);
+  list.appendChild(noneBtn);
+
+  popup.appendChild(list);
+  document.body.appendChild(popup);
+
+  const rect = anchorEl.getBoundingClientRect();
+  const maxLeft = window.innerWidth - popup.offsetWidth - 16;
+  popup.style.top = `${rect.bottom + 6}px`;
+  popup.style.left = `${Math.max(16, Math.min(rect.left, maxLeft))}px`;
+
+  activePopup = popup;
+  // Deferred so the click that opened the popup doesn't immediately close it.
+  setTimeout(() => {
+    dismissPopupListener = (e) => {
+      if (!popup.contains(e.target)) closeAmbiguousPopup();
+    };
+    document.addEventListener("click", dismissPopupListener, true);
+  }, 0);
+}
+
+function resolveAmbiguousItem(entry, candidate) {
+  const replacement = `${candidate.canonical_name} (${entry.raw})`;
+  const pos = nthIndexOf(currentNormalizedText, entry.marker, entry.occurrenceIndex);
+  if (pos !== -1) {
+    currentNormalizedText =
+      currentNormalizedText.slice(0, pos) +
+      replacement +
+      currentNormalizedText.slice(pos + entry.marker.length);
+  }
+
+  // Mutate the underlying item in place so re-rendering (transcript AND the
+  // Tests required panel) reflects the resolution and doesn't re-highlight it.
+  Object.assign(entry.item, {
+    status: "confirmed",
+    confirmation_status: "clinician_confirmed",
+    candidates: null,
+    reason: null,
+  });
+  if (entry.field === "tests_required") {
+    entry.item.normalized = candidate.canonical_name;
+    entry.item.source = candidate.domain;
+    entry.item.terminology_system = candidate.terminology_system;
+    entry.item.code = candidate.code;
+    entry.item.match_type = "ambiguous_abbreviation";
+  } else {
+    entry.item.normalized_term = candidate.canonical_name;
+    entry.item.terminology_system = candidate.terminology_system;
+    entry.item.code = candidate.code;
+    entry.item.match_type = "ambiguous_abbreviation";
+  }
+
+  closeAmbiguousPopup();
+  updateTranscriptView();
+  if (entry.field === "tests_required") {
+    renderTests(currentEntryId, currentStructured.tests_required || []);
+  }
+  updateHistoryText(currentEntryId, currentNormalizedText);
+  setStatus(`Resolved "${entry.raw}" → ${candidate.canonical_name}.`);
+}
+
+// ---------------------------------------------------------------------------
+// Tests required — checkbox confirm/exclude for confirmed items. Ambiguous
+// items resolve inline in the transcript above (see openAmbiguousPopup); this
+// panel just shows a pointer back there until that happens.
+// ---------------------------------------------------------------------------
 
 function hideTests() {
   testsSection.classList.add("hidden");
@@ -212,8 +418,8 @@ function renderTests(entryId, testsRequired) {
       checkbox.type = "checkbox";
       checkbox.dataset.testIndex = String(index);
       // Every item that reaches here already cleared a real confidence
-      // bar (curated abbreviation, exact match, or strict fuzzy cutoff)
-      // in terminology_normalize.py, so all confirmed items start checked.
+      // bar (curated abbreviation, exact match, strict fuzzy cutoff, or a
+      // clinician's own inline disambiguation choice), so it starts checked.
       checkbox.checked = true;
       el.appendChild(checkbox);
     }
@@ -252,56 +458,13 @@ function renderTests(entryId, testsRequired) {
     } else if (item.status === "ambiguous") {
       const label = document.createElement("p");
       label.className = "match-name";
-      label.textContent = "Ambiguous medical abbreviation — which meaning did you intend?";
+      label.textContent = "Ambiguous medical abbreviation";
       body.appendChild(label);
 
-      const group = document.createElement("div");
-      group.className = "ambiguous-candidates";
-
-      item.candidates.forEach((cand, candIndex) => {
-        const optionLabel = document.createElement("label");
-        optionLabel.className = "ambiguous-candidate";
-
-        const radio = document.createElement("input");
-        radio.type = "radio";
-        radio.name = `ambiguous-${index}`;
-        radio.dataset.testIndex = String(index);
-        radio.value = String(candIndex);
-        // Never pre-select a candidate — the doctor must choose.
-        radio.checked = false;
-
-        const textWrap = document.createElement("span");
-        textWrap.className = "ambiguous-candidate-label";
-
-        const nameSpan = document.createElement("span");
-        nameSpan.textContent = cand.canonical_name;
-        textWrap.appendChild(nameSpan);
-
-        const domainSpan = document.createElement("span");
-        domainSpan.className = "ambiguous-candidate-domain";
-        domainSpan.textContent = `${cand.domain.replace(/_/g, " ")} — ${cand.reason}`;
-        textWrap.appendChild(domainSpan);
-
-        optionLabel.appendChild(radio);
-        optionLabel.appendChild(textWrap);
-        group.appendChild(optionLabel);
-      });
-
-      const noneLabel = document.createElement("label");
-      noneLabel.className = "ambiguous-candidate";
-      const noneRadio = document.createElement("input");
-      noneRadio.type = "radio";
-      noneRadio.name = `ambiguous-${index}`;
-      noneRadio.dataset.testIndex = String(index);
-      noneRadio.value = "none";
-      noneRadio.checked = false;
-      const noneText = document.createElement("span");
-      noneText.textContent = "None of these / keep original";
-      noneLabel.appendChild(noneRadio);
-      noneLabel.appendChild(noneText);
-      group.appendChild(noneLabel);
-
-      body.appendChild(group);
+      const hint = document.createElement("p");
+      hint.className = "match-hint";
+      hint.textContent = "Tap the highlighted term in the transcript above to choose what you meant.";
+      body.appendChild(hint);
     } else {
       const warning = document.createElement("p");
       warning.className = "match-name";
@@ -321,47 +484,15 @@ confirmTestsBtn.addEventListener("click", () => {
   const accepted = [];
 
   lastTestsRequired.forEach((item, index) => {
-    if (item.status === "confirmed") {
-      const checkbox = testsList.querySelector(
-        `input[type="checkbox"][data-test-index="${index}"]`
-      );
-      if (checkbox && checkbox.checked) {
-        accepted.push(item);
-      }
-      return;
+    if (item.status !== "confirmed") return; // still ambiguous/unrecognized: excluded.
+    const checkbox = testsList.querySelector(
+      `input[type="checkbox"][data-test-index="${index}"]`
+    );
+    if (checkbox && checkbox.checked) {
+      accepted.push(item);
     }
-
-    if (item.status === "ambiguous") {
-      const selected = testsList.querySelector(`input[name="ambiguous-${index}"]:checked`);
-      if (!selected || selected.value === "none") {
-        return; // Doctor didn't pick a meaning — excluded, same as an unrecognized item.
-      }
-      const candidate = item.candidates[Number(selected.value)];
-      accepted.push({
-        raw: item.raw,
-        normalized: candidate.canonical_name,
-        source: candidate.domain,
-        terminology_system: candidate.terminology_system,
-        code: candidate.code,
-        match_type: "ambiguous_abbreviation",
-        confidence: null,
-        status: "confirmed",
-        confirmation_status: "clinician_confirmed",
-        candidates: null,
-        reason: null,
-      });
-
-      // Patch the reconstructed transcript: swap the "[ambiguous — please
-      // confirm]" marker for this item with the doctor's chosen expansion,
-      // using the same bracket convention as an auto-expanded abbreviation.
-      const marker = `${item.raw} [ambiguous — please confirm]`;
-      const replacement = `${candidate.canonical_name} (${item.raw})`;
-      currentNormalizedText = currentNormalizedText.split(marker).join(replacement);
-    }
-    // status "unrecognized": never included.
   });
 
-  updateTranscriptView();
   confirmHistoryTests(entryId, accepted, currentNormalizedText);
   hideTests();
   setStatus(`Saved ${accepted.length} confirmed test(s) to history.`);
@@ -370,129 +501,3 @@ confirmTestsBtn.addEventListener("click", () => {
 skipTestsBtn.addEventListener("click", () => {
   hideTests();
 });
-
-// Generic controller for one field's ambiguous-abbreviation confirmation
-// panel (Clinical history / Provisional diagnosis / Medication). Only
-// ambiguous items are ever rendered — confirmed expansions are already
-// embedded directly in the displayed/saved transcript text, the same way
-// tests_required's abbreviation expansions are, so there's nothing to
-// check off for those.
-function setupFieldPanel(config) {
-  const sectionEl = document.getElementById(config.sectionId);
-  const listEl = document.getElementById(config.listId);
-  const confirmBtn = document.getElementById(config.confirmId);
-  const skipBtn = document.getElementById(config.skipId);
-
-  let entryId = null;
-  let ambiguousTerms = [];
-
-  function hide() {
-    sectionEl.classList.add("hidden");
-    listEl.innerHTML = "";
-    ambiguousTerms = [];
-  }
-
-  function render(newEntryId, resolvedTerms) {
-    entryId = newEntryId;
-    ambiguousTerms = (resolvedTerms || []).filter((t) => t.status === "ambiguous");
-    listEl.innerHTML = "";
-
-    if (ambiguousTerms.length === 0) {
-      sectionEl.classList.add("hidden");
-      return;
-    }
-
-    ambiguousTerms.forEach((item, index) => {
-      const el = document.createElement("li");
-      el.className = "match-item ambiguous";
-
-      const body = document.createElement("div");
-      body.className = "match-body";
-
-      const heard = document.createElement("p");
-      heard.className = "match-candidate";
-      heard.textContent = `Heard: "${item.raw_phrase}"`;
-      body.appendChild(heard);
-
-      const label = document.createElement("p");
-      label.className = "match-name";
-      label.textContent = "Ambiguous medical abbreviation — which meaning did you intend?";
-      body.appendChild(label);
-
-      const group = document.createElement("div");
-      group.className = "ambiguous-candidates";
-
-      item.candidates.forEach((cand, candIndex) => {
-        const optionLabel = document.createElement("label");
-        optionLabel.className = "ambiguous-candidate";
-
-        const radio = document.createElement("input");
-        radio.type = "radio";
-        radio.name = `${config.field}-ambiguous-${index}`;
-        radio.value = String(candIndex);
-        // Never pre-select a candidate — the doctor must choose.
-        radio.checked = false;
-
-        const textWrap = document.createElement("span");
-        textWrap.className = "ambiguous-candidate-label";
-
-        const nameSpan = document.createElement("span");
-        nameSpan.textContent = cand.canonical_name;
-        textWrap.appendChild(nameSpan);
-
-        const domainSpan = document.createElement("span");
-        domainSpan.className = "ambiguous-candidate-domain";
-        domainSpan.textContent = `${cand.domain.replace(/_/g, " ")} — ${cand.reason}`;
-        textWrap.appendChild(domainSpan);
-
-        optionLabel.appendChild(radio);
-        optionLabel.appendChild(textWrap);
-        group.appendChild(optionLabel);
-      });
-
-      const noneLabel = document.createElement("label");
-      noneLabel.className = "ambiguous-candidate";
-      const noneRadio = document.createElement("input");
-      noneRadio.type = "radio";
-      noneRadio.name = `${config.field}-ambiguous-${index}`;
-      noneRadio.value = "none";
-      noneRadio.checked = false;
-      const noneText = document.createElement("span");
-      noneText.textContent = "None of these / keep original";
-      noneLabel.appendChild(noneRadio);
-      noneLabel.appendChild(noneText);
-      group.appendChild(noneLabel);
-
-      body.appendChild(group);
-      el.appendChild(body);
-      listEl.appendChild(el);
-    });
-
-    sectionEl.classList.remove("hidden");
-  }
-
-  confirmBtn.addEventListener("click", () => {
-    ambiguousTerms.forEach((item, index) => {
-      const selected = listEl.querySelector(
-        `input[name="${config.field}-ambiguous-${index}"]:checked`
-      );
-      if (!selected || selected.value === "none") return; // Kept original — no patch.
-
-      const candidate = item.candidates[Number(selected.value)];
-      const marker = `${item.raw_phrase} [ambiguous — please confirm]`;
-      const replacement = `${candidate.canonical_name} (${item.raw_phrase})`;
-      currentNormalizedText = currentNormalizedText.split(marker).join(replacement);
-    });
-
-    updateTranscriptView();
-    updateHistoryText(entryId, currentNormalizedText);
-    hide();
-    setStatus(`${config.label}: confirmed terms saved.`);
-  });
-
-  skipBtn.addEventListener("click", hide);
-
-  return { config, render, hide };
-}
-
-const fieldPanelControllers = FIELD_PANELS.map(setupFieldPanel);

@@ -386,26 +386,21 @@ full field list and what each status value means.
 
 ### Clinician disambiguation UI
 
-When a `tests_required` item comes back `status: "ambiguous"`, the
-"Tests required" panel (`frontend/app.js`) renders a radio-button group —
-one option per candidate (canonical name + domain hint + the ranking
-`reason`) plus a **"None of these / keep original"** option, none
-pre-selected. On **Confirm & save**, the doctor's pick (or "none") resolves
-that item into the final structured record and patches the `"[ambiguous —
-please confirm]"` marker in the displayed/saved transcript with the chosen
-expansion — both the transcript text and the saved History entry reflect
-the clinician's decision, with the original raw phrase preserved
-alongside it (`match_type: "ambiguous_abbreviation"`,
-`confirmation_status: "clinician_confirmed"`).
-
-Clinical history, provisional diagnosis, and medication each get their own
-**independent** confirmation panel (same radio-button/"none of these"
-pattern, via `setupFieldPanel()` in `frontend/app.js`) — separate from
-"Tests required" and from each other, so confirming one never affects the
-others. Only ambiguous terms ever appear in these panels; confirmed
-(unambiguous) expansions are already embedded directly in the displayed
-transcript, with nothing further for the doctor to check off. A panel with
-no ambiguous terms simply doesn't appear.
+Every ambiguous abbreviation — in `tests_required`, `clinical_history`,
+`provisional_diagnosis`, or `medication` — is highlighted **directly in
+the displayed transcript** at its `"{raw} [ambiguous — please confirm]"`
+marker (`frontend/app.js`'s `renderNormalizedHtml()`). Tapping the
+highlighted term pops up its candidate list right there — canonical name,
+domain hint, and the ranking `reason` — plus a **"None of these / keep
+original"** option, none pre-selected. Picking a candidate patches that
+exact occurrence (and only that occurrence — if the same abbreviation is
+ambiguous in two different fields, e.g. "TB" in both Provisional diagnosis
+and Tests required, each is tracked and resolved independently) in the
+displayed transcript and immediately saves the updated text to the History
+entry. `tests_required` additionally keeps its checkbox-based "Tests
+required" panel below the transcript, for including/excluding confirmed
+(non-ambiguous) items before saving — an item resolved via the inline
+popup becomes checkable there too, exactly like any other confirmed test.
 
 ## Out of scope (deliberately)
 

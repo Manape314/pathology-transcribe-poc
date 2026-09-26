@@ -336,36 +336,6 @@ h1 {
   font-weight: 600;
 }
 
-.ambiguous-candidates {
-  display: flex;
-  flex-direction: column;
-  gap: 0.4rem;
-  margin-top: 0.5rem;
-}
-
-.ambiguous-candidate {
-  display: flex;
-  align-items: flex-start;
-  gap: 0.5rem;
-  font-size: 0.85rem;
-  cursor: pointer;
-}
-
-.ambiguous-candidate input[type="radio"] {
-  margin-top: 0.2rem;
-  flex-shrink: 0;
-}
-
-.ambiguous-candidate-label {
-  display: flex;
-  flex-direction: column;
-}
-
-.ambiguous-candidate-domain {
-  font-size: 0.75rem;
-  color: var(--muted);
-}
-
 .match-body {
   flex: 1;
   min-width: 0;
@@ -561,4 +531,87 @@ h1 {
   margin: 0;
   line-height: 1.5;
   white-space: pre-wrap;
+}
+
+/* ---- Inline ambiguous-term highlighting + click-to-choose popup ---- */
+
+.ambiguous-highlight {
+  background: #fef3c7;
+  border-bottom: 2px dotted #b45309;
+  border-radius: 3px;
+  padding: 0 0.1rem;
+  cursor: pointer;
+}
+
+.ambiguous-highlight:hover,
+.ambiguous-highlight:focus {
+  background: #fde68a;
+  outline: none;
+}
+
+.ambiguous-popup {
+  position: fixed;
+  z-index: 1000;
+  background: var(--card);
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.18);
+  padding: 0.75rem;
+  width: min(320px, calc(100vw - 2rem));
+}
+
+.ambiguous-popup-title {
+  margin: 0 0 0.6rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #0369a1;
+}
+
+.ambiguous-popup-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.ambiguous-popup-option {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 0.5rem 0.65rem;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #fff;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.ambiguous-popup-option:hover {
+  border-color: var(--teal);
+  background: var(--bg);
+}
+
+.ambiguous-popup-option .option-name {
+  display: block;
+  font-weight: 600;
+  font-size: 0.9rem;
+  color: var(--text);
+}
+
+.ambiguous-popup-option .option-detail {
+  display: block;
+  font-size: 0.75rem;
+  color: var(--muted);
+  margin-top: 0.1rem;
+}
+
+.ambiguous-popup-option.none-option .option-name {
+  font-weight: 500;
+  color: var(--muted);
+  font-style: italic;
+}
+
+.match-item.ambiguous .match-hint {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--muted);
 }
