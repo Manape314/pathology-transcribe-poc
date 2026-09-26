@@ -78,6 +78,41 @@ CLINICAL_ABBREVIATIONS: dict[str, dict] = {
     "fhx": {"canonical_name": "Family History", "domain": "history"},
     "shx": {"canonical_name": "Social History", "domain": "history"},
     "nbm": {"canonical_name": "Nil by Mouth", "domain": "clinical_instruction"},
+    "bp": {"canonical_name": "Blood Pressure", "domain": "vital_sign"},
+    "spo2": {"canonical_name": "Oxygen Saturation", "domain": "vital_sign"},
+    "sats": {"canonical_name": "Oxygen Saturation", "domain": "vital_sign"},
+    "gcs": {"canonical_name": "Glasgow Coma Scale", "domain": "clinical_finding"},
+    "bmi": {"canonical_name": "Body Mass Index", "domain": "clinical_finding"},
+    "bsa": {"canonical_name": "Body Surface Area", "domain": "clinical_finding"},
+    "tia": {"canonical_name": "Transient Ischaemic Attack", "domain": "clinical_diagnosis"},
+    "pci": {"canonical_name": "Percutaneous Coronary Intervention", "domain": "clinical_diagnosis"},
+    "acs": {"canonical_name": "Acute Coronary Syndrome", "domain": "clinical_diagnosis"},
+    "stemi": {"canonical_name": "ST-Elevation Myocardial Infarction", "domain": "clinical_diagnosis"},
+    "nstemi": {"canonical_name": "Non-ST-Elevation Myocardial Infarction", "domain": "clinical_diagnosis"},
+    "hld": {"canonical_name": "Hyperlipidaemia", "domain": "clinical_diagnosis"},
+    "osa": {"canonical_name": "Obstructive Sleep Apnoea", "domain": "clinical_diagnosis"},
+    "gdm": {"canonical_name": "Gestational Diabetes Mellitus", "domain": "clinical_diagnosis"},
+    "pcos": {"canonical_name": "Polycystic Ovary Syndrome", "domain": "clinical_diagnosis"},
+    "pud": {"canonical_name": "Peptic Ulcer Disease", "domain": "clinical_diagnosis"},
+    "aaa": {"canonical_name": "Abdominal Aortic Aneurysm", "domain": "clinical_diagnosis"},
+    "mva": {"canonical_name": "Motor Vehicle Accident", "domain": "history"},
+    "nof": {"canonical_name": "Neck of Femur (Fracture)", "domain": "clinical_diagnosis"},
+    "ftt": {"canonical_name": "Failure to Thrive", "domain": "clinical_diagnosis"},
+    "iugr": {"canonical_name": "Intrauterine Growth Restriction", "domain": "clinical_diagnosis"},
+    "pph": {"canonical_name": "Postpartum Haemorrhage", "domain": "clinical_diagnosis"},
+    "aph": {"canonical_name": "Antepartum Haemorrhage", "domain": "clinical_diagnosis"},
+    "ihd": {"canonical_name": "Ischaemic Heart Disease", "domain": "clinical_diagnosis"},
+    "pvd": {"canonical_name": "Peripheral Vascular Disease", "domain": "clinical_diagnosis"},
+    "crf": {"canonical_name": "Chronic Renal Failure", "domain": "clinical_diagnosis"},
+    "arf": {"canonical_name": "Acute Renal Failure", "domain": "clinical_diagnosis"},
+    "ild": {"canonical_name": "Interstitial Lung Disease", "domain": "clinical_diagnosis"},
+    "n/v": {"canonical_name": "Nausea and Vomiting", "domain": "symptom"},
+    # Deliberately NOT added: "HR" for Heart Rate — collides with the very
+    # common "hr"/"hrs" abbreviation for "hour(s)" in ordinary clinical
+    # prose (e.g. "pain for 6 hrs"), which would get wrongly expanded.
+    # "RR" (Respiratory Rate vs. Regular Rhythm on cardiac exam) is
+    # genuinely ambiguous, so it lives in the shared
+    # terminology_normalize.AMBIGUOUS_ABBREVIATIONS instead.
 }
 
 # Dosing/route/frequency shorthand — a third, distinct vocabulary domain
@@ -102,6 +137,25 @@ MEDICATION_ABBREVIATIONS: dict[str, dict] = {
     "sc": {"canonical_name": "Subcutaneous", "domain": "dosing_route"},
     "sl": {"canonical_name": "Sublingual", "domain": "dosing_route"},
     "pr": {"canonical_name": "Per Rectum", "domain": "dosing_route"},
+    "ac": {"canonical_name": "Before Meals", "domain": "dosing_frequency"},
+    "pc": {"canonical_name": "After Meals", "domain": "dosing_frequency"},
+    "hs": {"canonical_name": "At Bedtime", "domain": "dosing_frequency"},
+    "ud": {"canonical_name": "As Directed", "domain": "dosing_frequency"},
+    "gtt": {"canonical_name": "Drops", "domain": "dosing_form"},
+    "ung": {"canonical_name": "Ointment", "domain": "dosing_form"},
+    "supp": {"canonical_name": "Suppository", "domain": "dosing_form"},
+    "neb": {"canonical_name": "Nebulised", "domain": "dosing_route"},
+    "ng": {"canonical_name": "Nasogastric", "domain": "dosing_route"},
+    "ppi": {"canonical_name": "Proton Pump Inhibitor", "domain": "drug_class"},
+    "nsaid": {"canonical_name": "Non-Steroidal Anti-Inflammatory Drug", "domain": "drug_class"},
+    "acei": {"canonical_name": "ACE Inhibitor", "domain": "drug_class"},
+    "arb": {"canonical_name": "Angiotensin Receptor Blocker", "domain": "drug_class"},
+    "ccb": {"canonical_name": "Calcium Channel Blocker", "domain": "drug_class"},
+    "abx": {"canonical_name": "Antibiotics", "domain": "drug_class"},
+    "coc": {"canonical_name": "Combined Oral Contraceptive", "domain": "drug_class"},
+    # Deliberately NOT added: "top" for "Topically" — collides with the
+    # ordinary phrase "top dose" (e.g. "furosemide top dose reached"),
+    # which would get wrongly expanded. Spell out "topically" instead.
 }
 
 

@@ -151,6 +151,123 @@ def test_medication_dosing_abbreviations(raw, expected):
     assert term["provenance"] == "curated medication abbreviation dictionary"
 
 
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        ("BP", "Blood Pressure"),
+        ("SpO2", "Oxygen Saturation"),
+        ("GCS", "Glasgow Coma Scale"),
+        ("BMI", "Body Mass Index"),
+        ("TIA", "Transient Ischaemic Attack"),
+        ("PCI", "Percutaneous Coronary Intervention"),
+        ("ACS", "Acute Coronary Syndrome"),
+        ("STEMI", "ST-Elevation Myocardial Infarction"),
+        ("OSA", "Obstructive Sleep Apnoea"),
+        ("GDM", "Gestational Diabetes Mellitus"),
+        ("PCOS", "Polycystic Ovary Syndrome"),
+        ("PUD", "Peptic Ulcer Disease"),
+    ],
+)
+def test_second_expansion_pass_new_clinical_abbreviations(raw, expected):
+    result = resolve_field_text(raw, "clinical_history", CLINICAL_ABBREVIATIONS)
+    assert result["resolved_terms"][0]["normalized_term"] == expected
+
+
+def test_hr_is_deliberately_not_expanded_due_to_hour_collision():
+    # "HR" was deliberately left out of CLINICAL_ABBREVIATIONS because it
+    # collides with the extremely common "hr"/"hrs" shorthand for "hour(s)"
+    # in ordinary clinical prose — expanding it would be wrong here.
+    result = resolve_field_text("pain for 6 hrs, no HR documented", "clinical_history", CLINICAL_ABBREVIATIONS)
+    assert result["resolved_terms"] == []
+
+
+def test_rr_is_ambiguous_not_unambiguously_respiratory_rate():
+    result = resolve_field_text("RR noted on exam", "clinical_history", CLINICAL_ABBREVIATIONS)
+    term = result["resolved_terms"][0]
+    assert term["status"] == "ambiguous"
+    assert {c["canonical_name"] for c in term["candidates"]} == {
+        "Respiratory Rate",
+        "Regular Rhythm",
+    }
+
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        ("AC", "Before Meals"),
+        ("PC", "After Meals"),
+        ("HS", "At Bedtime"),
+        ("UD", "As Directed"),
+        ("GTT", "Drops"),
+        ("UNG", "Ointment"),
+        ("SUPP", "Suppository"),
+        ("NEB", "Nebulised"),
+        ("NG", "Nasogastric"),
+    ],
+)
+def test_second_expansion_pass_new_medication_abbreviations(raw, expected):
+    result = resolve_field_text(raw, "medication", MEDICATION_ABBREVIATIONS)
+    assert result["resolved_terms"][0]["normalized_term"] == expected
+
+
+def test_top_is_deliberately_not_expanded_due_to_top_dose_collision():
+    result = resolve_field_text("furosemide top dose reached", "medication", MEDICATION_ABBREVIATIONS)
+    assert result["resolved_terms"] == []
+
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        ("AAA", "Abdominal Aortic Aneurysm"),
+        ("MVA", "Motor Vehicle Accident"),
+        ("NOF", "Neck of Femur (Fracture)"),
+        ("FTT", "Failure to Thrive"),
+        ("IUGR", "Intrauterine Growth Restriction"),
+        ("PPH", "Postpartum Haemorrhage"),
+        ("APH", "Antepartum Haemorrhage"),
+        ("IHD", "Ischaemic Heart Disease"),
+        ("PVD", "Peripheral Vascular Disease"),
+        ("CRF", "Chronic Renal Failure"),
+        ("ARF", "Acute Renal Failure"),
+        ("ILD", "Interstitial Lung Disease"),
+    ],
+)
+def test_third_expansion_pass_new_clinical_abbreviations(raw, expected):
+    result = resolve_field_text(raw, "clinical_history", CLINICAL_ABBREVIATIONS)
+    assert result["resolved_terms"][0]["normalized_term"] == expected
+
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        ("PPI", "Proton Pump Inhibitor"),
+        ("NSAID", "Non-Steroidal Anti-Inflammatory Drug"),
+        ("ACEI", "ACE Inhibitor"),
+        ("ARB", "Angiotensin Receptor Blocker"),
+        ("CCB", "Calcium Channel Blocker"),
+        ("Abx", "Antibiotics"),
+        ("COC", "Combined Oral Contraceptive"),
+    ],
+)
+def test_third_expansion_pass_new_medication_abbreviations(raw, expected):
+    result = resolve_field_text(raw, "medication", MEDICATION_ABBREVIATIONS)
+    assert result["resolved_terms"][0]["normalized_term"] == expected
+
+
+def test_ct_is_ambiguous_not_unambiguously_computed_tomography():
+    # "CT" is genuinely ambiguous (Computed Tomography vs Chlamydia
+    # Trachomatis) — always flagged, even though imaging is the far more
+    # common real-world reading, per the standing "never auto-resolve
+    # genuine ambiguity" rule.
+    result = resolve_field_text("CT scan requested", "clinical_history", CLINICAL_ABBREVIATIONS)
+    term = result["resolved_terms"][0]
+    assert term["status"] == "ambiguous"
+    assert {c["canonical_name"] for c in term["candidates"]} == {
+        "Chlamydia Trachomatis",
+        "Computed Tomography",
+    }
+
+
 def test_medication_field_end_to_end():
     result = resolve_field_text("paracetamol, 1 gram PRN", "medication", MEDICATION_ABBREVIATIONS)
     assert result["value"] == "paracetamol, 1 gram As Needed (PRN)"

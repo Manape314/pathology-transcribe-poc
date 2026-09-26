@@ -119,6 +119,41 @@ ABBREVIATIONS: dict[str, dict] = {
     "k": {"canonical_name": "Potassium", "domain": "chemical_pathology"},
     "na": {"canonical_name": "Sodium", "domain": "chemical_pathology"},
     "mg": {"canonical_name": "Magnesium", "domain": "chemical_pathology"},
+    "cl": {"canonical_name": "Chloride", "domain": "chemical_pathology"},
+    "co2": {"canonical_name": "Bicarbonate", "domain": "chemical_pathology"},
+    "zn": {"canonical_name": "Zinc", "domain": "chemical_pathology"},
+    "cu": {"canonical_name": "Copper", "domain": "chemical_pathology"},
+    "nh3": {"canonical_name": "Ammonia", "domain": "chemical_pathology"},
+    "lact": {"canonical_name": "Lactate", "domain": "chemical_pathology"},
+    "ph": {"canonical_name": "pH", "domain": "chemical_pathology"},
+    "abg": {"canonical_name": "Arterial Blood Gas", "domain": "chemical_pathology"},
+    "vbg": {"canonical_name": "Venous Blood Gas", "domain": "chemical_pathology"},
+    "fdp": {"canonical_name": "Fibrin Degradation Products", "domain": "coagulation"},
+    "hgb": {"canonical_name": "Haemoglobin", "domain": "haematology"},
+    "plts": {"canonical_name": "Platelet Count", "domain": "haematology"},
+    "anc": {"canonical_name": "Absolute Neutrophil Count", "domain": "haematology"},
+    "alc": {"canonical_name": "Absolute Lymphocyte Count", "domain": "haematology"},
+    "ferr": {"canonical_name": "Ferritin", "domain": "haematology"},
+    "hapto": {"canonical_name": "Haptoglobin", "domain": "haematology"},
+    "trf": {"canonical_name": "Transferrin", "domain": "haematology"},
+    "afb": {"canonical_name": "Acid-Fast Bacilli", "domain": "microbiology"},
+    "crag": {"canonical_name": "Cryptococcal Antigen", "domain": "microbiology"},
+    "hsv": {"canonical_name": "Herpes Simplex Virus", "domain": "microbiology"},
+    "cmv": {"canonical_name": "Cytomegalovirus", "domain": "microbiology"},
+    "ebv": {"canonical_name": "Epstein-Barr Virus", "domain": "microbiology"},
+    "vzv": {"canonical_name": "Varicella Zoster Virus", "domain": "microbiology"},
+    "tpha": {"canonical_name": "Treponema Pallidum Haemagglutination Assay", "domain": "microbiology"},
+    "mp": {"canonical_name": "Malaria Parasite (Blood Film)", "domain": "microbiology"},
+    "nse": {"canonical_name": "Neuron-Specific Enolase", "domain": "tumour_marker"},
+    "pap": {"canonical_name": "Papanicolaou Smear", "domain": "cytology"},
+    "igf-1": {"canonical_name": "Insulin-like Growth Factor 1", "domain": "endocrine"},
+    "gh": {"canonical_name": "Growth Hormone", "domain": "endocrine"},
+    "pra": {"canonical_name": "Plasma Renin Activity", "domain": "endocrine"},
+    "aldo": {"canonical_name": "Aldosterone", "domain": "endocrine"},
+    "ecg": {"canonical_name": "Electrocardiogram", "domain": "cardiac"},
+    "ekg": {"canonical_name": "Electrocardiogram", "domain": "cardiac"},
+    "g&s": {"canonical_name": "Group and Save", "domain": "blood_bank"},
+    "t&s": {"canonical_name": "Type and Screen", "domain": "blood_bank"},
     # Endocrine
     "tsh": {"canonical_name": "Thyroid Stimulating Hormone", "domain": "endocrine"},
     "ft4": {"canonical_name": "Free T4", "domain": "endocrine"},
@@ -160,8 +195,34 @@ ABBREVIATIONS: dict[str, dict] = {
     # Immunology
     "ana": {"canonical_name": "Antinuclear Antibody", "domain": "immunology"},
     "rf": {"canonical_name": "Rheumatoid Factor", "domain": "immunology"},
+    "anca": {"canonical_name": "Antineutrophil Cytoplasmic Antibody", "domain": "immunology"},
+    "c3": {"canonical_name": "Complement C3", "domain": "immunology"},
+    "c4": {"canonical_name": "Complement C4", "domain": "immunology"},
     # Blood bank
     "xm": {"canonical_name": "Crossmatch", "domain": "blood_bank"},
+    # Additional renal/chemistry — kept unambiguous for the same reason as
+    # K/Na/Mg above: a "tests required" list item is always matched whole,
+    # never substring-searched, so short element/analyte symbols are safe
+    # here even though they'd be unsafe to scan for inside free prose.
+    "gfr": {"canonical_name": "Estimated Glomerular Filtration Rate", "domain": "chemical_pathology"},
+    "urea": {"canonical_name": "Urea", "domain": "chemical_pathology"},
+    "cr": {"canonical_name": "Creatinine", "domain": "chemical_pathology"},
+    "d-dimer": {"canonical_name": "D-Dimer", "domain": "coagulation"},
+    "ddimer": {"canonical_name": "D-Dimer", "domain": "coagulation"},
+    "fibrinogen": {"canonical_name": "Fibrinogen", "domain": "coagulation"},
+    "amy": {"canonical_name": "Amylase", "domain": "chemical_pathology"},
+    "lip": {"canonical_name": "Lipase", "domain": "chemical_pathology"},
+    "alb": {"canonical_name": "Albumin", "domain": "chemical_pathology"},
+    "tp": {"canonical_name": "Total Protein", "domain": "chemical_pathology"},
+    "acr": {"canonical_name": "Albumin Creatinine Ratio", "domain": "chemical_pathology"},
+    # Additional microbiology/serology
+    "anti hbs": {"canonical_name": "Hepatitis B Surface Antibody", "domain": "microbiology"},
+    "hcv": {"canonical_name": "Hepatitis C Virus Antibody", "domain": "microbiology"},
+    # Additional tumour markers / endocrine
+    "ca15-3": {"canonical_name": "Cancer Antigen 15-3", "domain": "tumour_marker"},
+    "cort": {"canonical_name": "Cortisol", "domain": "endocrine"},
+    "prl": {"canonical_name": "Prolactin", "domain": "endocrine"},
+    "fol": {"canonical_name": "Folate", "domain": "haematology"},
     # NOTE: the genuinely ambiguous abbreviations (TB, UA, PCR, MS, CA, BS,
     # BM, CP, RA, MI, CVA, PID, DM, CF, HD, ...) are NOT here — they live in
     # AMBIGUOUS_ABBREVIATIONS below instead, so they're never silently
@@ -404,6 +465,102 @@ AMBIGUOUS_ABBREVIATIONS: dict[str, list[dict]] = {
             "canonical_name": "Western Blot",
             "domain": "microbiology",
             "keywords": ["hiv", "confirmatory", "antibody", "serology"],
+        },
+    ],
+    "cd": [
+        {
+            "canonical_name": "Crohn's Disease",
+            "domain": "clinical_diagnosis",
+            "keywords": ["bowel", "ibd", "abdominal pain", "diarrhoea", "gastrointestinal"],
+        },
+        {
+            "canonical_name": "Contact Dermatitis",
+            "domain": "clinical_diagnosis",
+            "keywords": ["rash", "skin", "allergen", "itch"],
+        },
+    ],
+    "uc": [
+        {
+            "canonical_name": "Ulcerative Colitis",
+            "domain": "clinical_diagnosis",
+            "keywords": ["bowel", "ibd", "bloody diarrhoea", "colitis", "gastrointestinal"],
+        },
+        {
+            "canonical_name": "Urinary Catheter",
+            "domain": "clinical_diagnosis",
+            "keywords": ["urinary", "catheter", "retention", "bladder"],
+        },
+    ],
+    "rr": [
+        {
+            "canonical_name": "Respiratory Rate",
+            "domain": "clinical_diagnosis",
+            "keywords": ["breathing", "respiratory", "tachypnoea", "vital signs", "sob"],
+        },
+        {
+            "canonical_name": "Regular Rhythm",
+            "domain": "clinical_diagnosis",
+            "keywords": ["cardiac", "heart sounds", "auscultation", "pulse"],
+        },
+    ],
+    "pct": [
+        {
+            "canonical_name": "Procalcitonin",
+            "domain": "chemical_pathology",
+            "keywords": ["sepsis", "infection", "bacterial", "inflammatory marker"],
+        },
+        {
+            "canonical_name": "Packed Cell Volume",
+            "domain": "haematology",
+            "keywords": ["anaemia", "haematocrit", "polycythaemia"],
+        },
+    ],
+    "gc": [
+        {
+            "canonical_name": "Gonococcus (Neisseria gonorrhoeae)",
+            "domain": "microbiology",
+            "keywords": ["discharge", "sexually transmitted", "urethritis", "cervicitis"],
+        },
+        {
+            "canonical_name": "Glucocorticoid",
+            "domain": "medication",
+            "keywords": ["steroid", "cortisone", "prednisone", "immunosuppression"],
+        },
+    ],
+    "ct": [
+        {
+            "canonical_name": "Chlamydia Trachomatis",
+            "domain": "microbiology",
+            "keywords": ["discharge", "sexually transmitted", "urethritis", "cervicitis"],
+        },
+        {
+            "canonical_name": "Computed Tomography",
+            "domain": "radiology",
+            "keywords": ["scan", "imaging", "radiology", "contrast"],
+        },
+    ],
+    "rom": [
+        {
+            "canonical_name": "Range of Motion",
+            "domain": "clinical_diagnosis",
+            "keywords": ["joint", "orthopaedic", "stiffness", "mobility"],
+        },
+        {
+            "canonical_name": "Rupture of Membranes",
+            "domain": "clinical_diagnosis",
+            "keywords": ["pregnancy", "labour", "obstetric", "amniotic fluid"],
+        },
+    ],
+    "pet": [
+        {
+            "canonical_name": "Pre-eclampsia",
+            "domain": "clinical_diagnosis",
+            "keywords": ["pregnancy", "hypertension", "proteinuria", "obstetric"],
+        },
+        {
+            "canonical_name": "Positron Emission Tomography",
+            "domain": "radiology",
+            "keywords": ["scan", "imaging", "oncology", "staging"],
         },
     ],
 }

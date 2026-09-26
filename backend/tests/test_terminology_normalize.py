@@ -223,6 +223,110 @@ def test_electrolyte_symbols_resolve_unambiguously(raw, expected_normalized):
     assert result["source"] == "abbreviation"
 
 
+@pytest.mark.parametrize(
+    "raw, expected_normalized",
+    [
+        ("GFR", "Estimated Glomerular Filtration Rate"),
+        ("Urea", "Urea"),
+        ("Cr", "Creatinine"),
+        ("D-Dimer", "D-Dimer"),
+        ("Amy", "Amylase"),
+        ("Lip", "Lipase"),
+        ("Alb", "Albumin"),
+        ("TP", "Total Protein"),
+        ("ACR", "Albumin Creatinine Ratio"),
+        ("ANCA", "Antineutrophil Cytoplasmic Antibody"),
+        ("C3", "Complement C3"),
+        ("C4", "Complement C4"),
+        ("HCV", "Hepatitis C Virus Antibody"),
+        ("CA15-3", "Cancer Antigen 15-3"),
+        ("Cort", "Cortisol"),
+        ("PRL", "Prolactin"),
+        ("Fol", "Folate"),
+    ],
+)
+def test_second_expansion_pass_new_lab_abbreviations(raw, expected_normalized):
+    result = normalize_test_item(raw)
+    assert result["normalized"] == expected_normalized
+    assert result["status"] == "confirmed"
+
+
+@pytest.mark.parametrize(
+    "raw, expected_candidate_names",
+    [
+        ("CD", {"Crohn's Disease", "Contact Dermatitis"}),
+        ("UC", {"Ulcerative Colitis", "Urinary Catheter"}),
+        ("RR", {"Respiratory Rate", "Regular Rhythm"}),
+    ],
+)
+def test_second_expansion_pass_new_ambiguous_abbreviations(raw, expected_candidate_names):
+    result = normalize_test_item(raw)
+    assert result["status"] == "ambiguous"
+    assert {c["canonical_name"] for c in result["candidates"]} == expected_candidate_names
+
+
+@pytest.mark.parametrize(
+    "raw, expected_normalized",
+    [
+        ("Cl", "Chloride"),
+        ("CO2", "Bicarbonate"),
+        ("Zn", "Zinc"),
+        ("Cu", "Copper"),
+        ("NH3", "Ammonia"),
+        ("Lact", "Lactate"),
+        ("pH", "pH"),
+        ("ABG", "Arterial Blood Gas"),
+        ("VBG", "Venous Blood Gas"),
+        ("FDP", "Fibrin Degradation Products"),
+        ("Hgb", "Haemoglobin"),
+        ("Plts", "Platelet Count"),
+        ("ANC", "Absolute Neutrophil Count"),
+        ("ALC", "Absolute Lymphocyte Count"),
+        ("Ferr", "Ferritin"),
+        ("Hapto", "Haptoglobin"),
+        ("Trf", "Transferrin"),
+        ("AFB", "Acid-Fast Bacilli"),
+        ("CrAg", "Cryptococcal Antigen"),
+        ("HSV", "Herpes Simplex Virus"),
+        ("CMV", "Cytomegalovirus"),
+        ("EBV", "Epstein-Barr Virus"),
+        ("VZV", "Varicella Zoster Virus"),
+        ("TPHA", "Treponema Pallidum Haemagglutination Assay"),
+        ("MP", "Malaria Parasite (Blood Film)"),
+        ("NSE", "Neuron-Specific Enolase"),
+        ("Pap", "Papanicolaou Smear"),
+        ("IGF-1", "Insulin-like Growth Factor 1"),
+        ("GH", "Growth Hormone"),
+        ("PRA", "Plasma Renin Activity"),
+        ("Aldo", "Aldosterone"),
+        ("ECG", "Electrocardiogram"),
+        ("EKG", "Electrocardiogram"),
+        ("G&S", "Group and Save"),
+        ("T&S", "Type and Screen"),
+    ],
+)
+def test_third_expansion_pass_new_lab_abbreviations(raw, expected_normalized):
+    result = normalize_test_item(raw)
+    assert result["normalized"] == expected_normalized
+    assert result["status"] == "confirmed"
+
+
+@pytest.mark.parametrize(
+    "raw, expected_candidate_names",
+    [
+        ("PCT", {"Procalcitonin", "Packed Cell Volume"}),
+        ("GC", {"Gonococcus (Neisseria gonorrhoeae)", "Glucocorticoid"}),
+        ("CT", {"Chlamydia Trachomatis", "Computed Tomography"}),
+        ("ROM", {"Range of Motion", "Rupture of Membranes"}),
+        ("PET", {"Pre-eclampsia", "Positron Emission Tomography"}),
+    ],
+)
+def test_third_expansion_pass_new_ambiguous_abbreviations(raw, expected_candidate_names):
+    result = normalize_test_item(raw)
+    assert result["status"] == "ambiguous"
+    assert {c["canonical_name"] for c in result["candidates"]} == expected_candidate_names
+
+
 def test_normalize_test_item_unrecognized_is_flagged_not_guessed():
     result = normalize_test_item("xyzzy nonsense term")
     assert result["normalized"] is None
