@@ -19,6 +19,11 @@ const testsEmpty = document.getElementById("testsEmpty");
 const confirmTestsBtn = document.getElementById("confirmTestsBtn");
 const skipTestsBtn = document.getElementById("skipTestsBtn");
 
+const printSection = document.getElementById("printSection");
+const doneBtn = document.getElementById("doneBtn");
+const printStatus = document.getElementById("printStatus");
+const printLabelImage = document.getElementById("printLabelImage");
+
 let lastTestsRequired = []; // the tests_required items currently rendered
 let currentNormalizedText = "";
 let currentRawText = "";
@@ -45,6 +50,7 @@ recordBtn.addEventListener("click", async () => {
 
 async function startRecording() {
   hideTests();
+  hidePrintSection();
   closeAmbiguousPopup();
   resetTranscriptView();
 
@@ -126,6 +132,7 @@ async function sendForTranscription(blob) {
       : null;
     if (currentEntryId) {
       renderTests(currentEntryId, currentStructured.tests_required || []);
+      showPrintSection();
     }
 
     setStatus(
@@ -500,4 +507,83 @@ confirmTestsBtn.addEventListener("click", () => {
 
 skipTestsBtn.addEventListener("click", () => {
   hideTests();
+});
+
+// ---------------------------------------------------------------------------
+// Finalize request: print the barcode label (server-side, via NIIMBOT —
+// see backend/label_printing.py) and keep a digital copy lab staff can
+// look up by scanning it (backend/print_records.py). This is a distinct,
+// explicit final step, separate from the Tests required panel's own
+// confirm/save — pressing it doesn't depend on that panel being used.
+// ---------------------------------------------------------------------------
+
+function showPrintSection() {
+  printStatus.textContent = "";
+  printLabelImage.classList.add("hidden");
+  printLabelImage.removeAttribute("src");
+  printSection.classList.remove("hidden");
+}
+
+function hidePrintSection() {
+  printSection.classList.add("hidden");
+  printStatus.textContent = "";
+  printLabelImage.classList.add("hidden");
+  printLabelImage.removeAttribute("src");
+}
+
+doneBtn.addEventListener("click", async () => {
+  const hpcsa = getSession();
+  const doctor = hpcsa ? getDoctor(hpcsa) : null;
+  if (!doctor) {
+    printStatus.textContent = "Not logged in — please log in again.";
+    return;
+  }
+
+  doneBtn.disabled = true;
+  printStatus.textContent = "Printing…";
+
+  try {
+    const res = await fetch(`${BACKEND_URL}/print-label`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        doctor_name: doctor.name,
+        hpcsa_number: doctor.hpcsa,
+        raw_text: currentRawText,
+        normalized_text: currentNormalizedText,
+        structured: currentStructured,
+      }),
+    });
+
+    if (!res.ok) {
+      throw new Error(`Server responded ${res.status}`);
+    }
+
+    const data = await res.json();
+    if (data.print_status === "printed") {
+      printStatus.textContent = `Printed — Request ID: ${data.request_id}`;
+    } else {
+      // A printer failure never looks like data loss: the digital copy
+      // is already saved server-side regardless of print_status.
+      printStatus.textContent =
+        `Digital copy saved (Request ID: ${data.request_id}) — ` +
+        `printer error: ${data.print_error}. Check the printer connection and try again.`;
+    }
+
+    // Two identical barcodes for this request: one just sent to the
+    // physical printer, this one (the exact same image) shown here and
+    // saved onto the History entry so the digital copy always has it too.
+    if (data.label_image) {
+      printLabelImage.src = data.label_image;
+      printLabelImage.classList.remove("hidden");
+      if (currentEntryId) {
+        attachLabelImage(currentEntryId, data.label_image);
+      }
+    }
+  } catch (err) {
+    console.error(err);
+    printStatus.textContent = "Failed to reach the server: " + err.message;
+  } finally {
+    doneBtn.disabled = false;
+  }
 });

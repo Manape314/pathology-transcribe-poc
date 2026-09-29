@@ -456,6 +456,22 @@ function updateHistoryText(entryId, updatedText) {
   saveHistory(hpcsa, entries);
 }
 
+// Called by app.js once "Done — Print label" returns successfully — saves
+// the SAME barcode image sent to the physical printer onto this History
+// entry, so the digital record always has its label too, not just the
+// transcript text. See backend/label_printing.py's image_to_data_url.
+function attachLabelImage(entryId, labelImageDataUrl) {
+  const hpcsa = getSession();
+  if (!hpcsa || !entryId || !labelImageDataUrl) return;
+
+  const entries = getHistory(hpcsa);
+  const entry = entries.find((e) => e.id === entryId);
+  if (!entry) return;
+
+  entry.labelImage = labelImageDataUrl;
+  saveHistory(hpcsa, entries);
+}
+
 function deleteHistoryEntry(id) {
   const hpcsa = getSession();
   if (!hpcsa) return;
@@ -507,6 +523,16 @@ function renderHistory() {
 
     item.appendChild(meta);
     item.appendChild(text);
+
+    // Only entries finalized via "Done — Print label" have this — same
+    // guard-on-optional-key pattern as testsRequired below.
+    if (entry.labelImage) {
+      const label = document.createElement("img");
+      label.className = "label-image";
+      label.alt = "Printed barcode label";
+      label.src = entry.labelImage;
+      item.appendChild(label);
+    }
 
     // Old entries (and entries where confirmation was skipped) simply
     // don't have a "testsRequired" key — this guard is the entire

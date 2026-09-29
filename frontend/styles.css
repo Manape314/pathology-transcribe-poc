@@ -615,3 +615,15 @@ h1 {
   font-size: 0.8rem;
   color: var(--muted);
 }
+
+/* ---- Printed barcode label (shown after "Done", and in History) ---- */
+
+.label-image {
+  display: block;
+  margin-top: 0.75rem;
+  max-width: 100%;
+  width: 280px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #fff;
+}

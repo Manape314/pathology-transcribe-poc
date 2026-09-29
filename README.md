@@ -7,9 +7,13 @@ dates/times converted to unambiguous values, test abbreviations (FBC, CRP,
 U&E, ...) expanded to their canonical names — for the clinician to review and
 confirm. The untouched raw transcript is always kept alongside it.
 
-No patient identifiers, no server-side database (the doctor's profile and
-history live in the browser's localStorage only), no SNOMED CT yet (see
-"Out of scope" below).
+No SNOMED CT yet (see "Out of scope" below). The doctor's profile and
+history live in the browser's localStorage only — transcription itself is
+fully stateless. The one deliberate exception is finalizing a request
+("Done — Print label"): that confirmed transcript IS stored server-side
+(SQLite), because that's what makes the printed barcode scannable/
+look-up-able by lab staff afterwards — see "Barcode label printing"
+below for why, and what that changes.
 
 ## Architecture
 
@@ -35,10 +39,12 @@ a GPU machine with no code changes (controlled by environment variables).
 
 ```
 backend/       FastAPI app (main.py), matching.py (NHLS/LOINC fuzzy suggestions),
-                field_extraction.py + terminology_normalize.py + datetime_normalize.py
-                (structured pathology-request parsing), scripts/build_terminology_index.py,
-                tests/
-frontend/      PWA — plain HTML/CSS/JS, no build step
+                field_extraction.py + terminology_normalize.py + clinical_terminology.py +
+                datetime_normalize.py (structured pathology-request parsing),
+                label_printing.py + print_records.py (barcode printing + lookup),
+                scripts/build_terminology_index.py, tests/
+frontend/      PWA — plain HTML/CSS/JS, no build step (lookup.html/lookup.js
+                is the separate lab-facing barcode lookup page)
 requirements.txt
 ```
 
@@ -73,6 +79,11 @@ terminology matching data loaded (`terminology_loaded`).
 If you skip the terminology-matching setup below, transcription and field
 extraction still work fine — `tests_required` items just come back with
 `status: "unmatched"` instead of a canonical name.
+
+`requirements.txt` covers everything except the barcode-printer client
+(`niimprint`), which needs one extra command — see "Barcode label
+printing" below. Skipping it is fine too: `/transcribe` and everything
+else works unaffected; only "Done — Print label" needs it.
 
 ### CPU vs GPU
 
@@ -293,10 +304,19 @@ every line of the extraction/normalization/matching code running for real
 test, and one confirming an ambiguous abbreviation reaches the frontend
 with its full candidate list through the actual endpoint.
 
-The Whisper-dependent `test_transcribe_endpoint.py` needs enough free RAM
-to load `large-v3` fresh (confirmed on this machine: fails with `mkl_malloc:
-failed to allocate memory` under ~2GB free) — the other test files have no
-such dependency and run in a few seconds.
+Also covers barcode label generation and printing (`test_label_printing.py`
+— request ID format/uniqueness, label image sizing, shrink-to-fit for long
+doctor names, and `niimprint` calls mocked so no physical printer is
+needed), the digital-record store (`test_print_records.py` — save/get
+roundtrip, and the print-failure-still-saves-a-record case, against a temp
+SQLite file so the real `print_records.db` is never touched), and the real
+`/print-label` + `/print-lookup` endpoints (`test_print_endpoints.py`).
+
+The Whisper-dependent `test_transcribe_endpoint.py` and
+`test_print_endpoints.py` (it imports `main`, which loads Whisper) both
+need enough free RAM to load `large-v3` fresh (confirmed on this machine:
+fails with `mkl_malloc: failed to allocate memory` under ~2GB free) — the
+other test files have no such dependency and run in a few seconds.
 
 ## Frontend — serve it
 
@@ -325,6 +345,86 @@ Browsers only grant microphone access on a **secure context**: `https://` **or**
   be **blocked**. Options: put both behind HTTPS (e.g. a reverse proxy with a
   self-signed cert, or a tunnel like ngrok/Cloudflare Tunnel), then point
   `BACKEND_URL` at the HTTPS backend.
+
+## Barcode label printing
+
+Once a doctor presses **"Done — Print label"**, the backend renders ONE
+barcode label image and produces **two identical copies of it**: one sent
+straight to a physical **NIIMBOT B21** thermal printer, the other returned
+to the PWA and saved onto the History entry (`backend/label_printing.py`'s
+`image_to_data_url` — the exact same PNG bytes both times, never
+re-rendered separately, so the two can't drift apart) — no manual step in
+the NIIMBOT app, ever. The label has the doctor's name as plain text and a
+Code128 barcode of a short request ID below it (never the transcript
+itself — barcodes can't hold that much data at a printable/scannable
+size). Lab staff scan (or type) that ID on a separate page
+(`frontend/lookup.html`, which also displays the same label image) to see
+the doctor's confirmed transcript.
+
+**Why this runs on the server, not in the browser**: iOS Safari supports
+neither the Web Bluetooth nor the WebUSB APIs, and Apple has stated no
+intent to add them — so a PWA that talks to the printer directly from the
+browser is a dead end on iPhone/iPad from day one. Since this project's
+backend already runs on the same machine the printer connects to,
+`POST /print-label` does the actual USB/Bluetooth printer communication
+server-side (via [`niimprint`](https://github.com/AndBondStyle/niimprint),
+a community reverse-engineered protocol client — NIIMBOT itself publishes
+neither a protocol nor a standard Windows print driver). The PWA just
+makes an ordinary HTTPS request, so this works identically on Android,
+iOS, and desktop from the start.
+
+**This is also why the project is no longer fully stateless**: scanning a
+barcode has to look something up against, and that can't live only in the
+doctor's own browser the way everything else here does. The confirmed
+transcript (which may include patient details the doctor dictated) is
+stored server-side in SQLite (`backend/print_records.py`,
+`backend/data/print_records.db` — already gitignored) and kept
+indefinitely. This was a deliberate, discussed tradeoff, not an oversight
+— see `print_records.py`'s docstring.
+
+### Setup
+
+`niimprint`'s own package metadata declares Python `<3.12`, which is
+overly conservative (nothing in its actual code is 3.12-incompatible —
+confirmed by installing and using it under 3.12 in this project). Install
+it separately from `requirements.txt`, since including it there would
+make a plain `pip install -r requirements.txt` fail outright on 3.12 and
+block installing everything else too:
+
+```bash
+pip install --ignore-requires-python "niimprint @ git+https://github.com/AndBondStyle/niimprint.git"
+```
+
+Connect the B21 via USB (recommended — appears to Windows as a plain
+serial/COM port, no special driver, no pairing/range issues) or Bluetooth.
+Configuration is all environment variables, same pattern as
+`WHISPER_MODEL`/`DEVICE`/`COMPUTE_TYPE`:
+
+| Variable                  | Default | Notes                                    |
+|---------------------------|---------|-------------------------------------------|
+| `PRINTER_CONNECTION`      | `usb`   | `usb` or `bluetooth`                      |
+| `PRINTER_USB_PORT`        | `auto`  | or an explicit COM port                   |
+| `PRINTER_BT_ADDRESS`      | (unset) | required if `PRINTER_CONNECTION=bluetooth`|
+| `PRINTER_DENSITY`         | `3`     | 1–5, per niimprint                        |
+| `PRINTER_LABEL_WIDTH_MM`  | `50`    | B21 supports 20–53mm                      |
+| `PRINTER_LABEL_HEIGHT_MM` | `30`    |                                            |
+
+If the printer isn't connected (or `niimprint` isn't installed), printing
+just fails gracefully: `/print-label` still saves the digital record and
+reports `print_status: "print_failed"` with the specific error — a
+printer problem never looks like the request itself failed, and the
+digital copy is never lost to a hardware hiccup.
+
+### Lab lookup page
+
+`frontend/lookup.html` is a **separate, unauthenticated** static page — a
+request-ID input (auto-focused, so a handheld barcode scanner acting as a
+keyboard-wedge device can scan directly into it and auto-submit on Enter)
+that calls `GET /print-lookup/{request_id}` and displays the doctor's
+name, HPCSA number, and confirmed transcript. No login is required — the
+request ID itself is the access key. That's an accepted tradeoff for this
+POC stage (same spirit as `main.py`'s CORS `allow_origins=["*"]` comment),
+not something to leave as-is before any real deployment.
 
 CORS is enabled wide-open (`*`) on the backend for POC convenience — lock it
 down to your real frontend origin before using this anywhere real.
@@ -402,6 +502,52 @@ required" panel below the transcript, for including/excluding confirmed
 (non-ambiguous) items before saving — an item resolved via the inline
 popup becomes checkable there too, exactly like any other confirmed test.
 
+### Finalizing a request: printing + lookup
+
+`POST /print-label` — JSON body:
+
+```json
+{
+  "doctor_name": "Dr. Thato Manapi",
+  "hpcsa_number": "808080",
+  "raw_text": "...",
+  "normalized_text": "...",
+  "structured": { "...": "..." }
+}
+```
+
+Generates a request ID, renders the label image once, **saves the digital
+record (including that image) first** (so it's never lost to a printer
+failure), then sends the SAME image to the physical printer. Returns:
+
+```json
+{
+  "request_id": "PR260929-7K4M",
+  "print_status": "printed",
+  "print_error": null,
+  "label_image": "data:image/png;base64,..."
+}
+```
+
+or, if the printer isn't reachable (`label_image` is still present — only
+the physical print failed, the digital copy and its barcode are fine):
+
+```json
+{
+  "request_id": "PR260929-7K4M",
+  "print_status": "print_failed",
+  "print_error": "Could not reach the NIIMBOT printer (usb connection): ...",
+  "label_image": "data:image/png;base64,..."
+}
+```
+
+`GET /print-lookup/{request_id}` — returns the full saved record
+(`doctor_name`, `hpcsa_number`, `raw_text`, `normalized_text`,
+`structured`, `printed_at`, `print_status`, `print_error`, `label_image`
+— the identical image, not re-rendered), or `404` if the ID doesn't exist.
+See "Barcode label printing" above for the full picture (why this exists,
+how printing actually happens, and the lookup page that calls this).
+
 ## Out of scope (deliberately)
 
 - **SNOMED CT matching** — the raw SNOMED CT files exist under
@@ -418,6 +564,10 @@ popup becomes checkable there too, exactly like any other confirmed test.
   ambiguous candidates but never auto-selects one, even with strong
   one-sided evidence; deferred until validated against a clinically
   reviewed dataset.
-- Patient identifiers, server-side storage (all doctor profiles, history,
-  and confirmed tests live in the browser's localStorage only — the server
-  is stateless).
+- Doctor profiles, history, and confirmed tests live in the browser's
+  localStorage only — the server stores nothing about them. The one
+  exception is finalized (printed) requests, which are stored server-side
+  specifically so lab staff can look them up from the barcode — see
+  "Barcode label printing" above for why, and what that changes.
+- Authentication on the lab lookup page — the request ID is the only
+  access control for now (see "Barcode label printing" above).

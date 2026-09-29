@@ -79,6 +79,7 @@
       <nav class="app-nav">
         <button id="historyNavBtn" class="nav-btn" type="button">History</button>
         <button id="profileNavBtn" class="nav-btn" type="button">Profile</button>
+        <a href="lookup.html" class="nav-btn" target="_blank" rel="noopener">Lab lookup</a>
         <button id="logoutBtn" class="logout-btn" type="button">Log out</button>
       </nav>
     </header>
@@ -110,6 +111,22 @@
         <button id="confirmTestsBtn" class="primary-btn" type="button">Confirm &amp; save</button>
         <button id="skipTestsBtn" class="nav-btn" type="button">Skip</button>
       </div>
+    </section>
+
+    <!-- Final step: doctor is done reviewing, print the barcode label and
+         save a server-side digital copy scannable by lab staff. Shown
+         automatically once a transcription exists. -->
+    <section id="printSection" class="matches hidden" aria-live="polite">
+      <h2>Finalize request</h2>
+      <p class="match-hint">
+        Prints a barcode label with your name and a unique request ID, and
+        keeps a digital copy lab staff can look up by scanning it.
+      </p>
+      <div class="matches-actions">
+        <button id="doneBtn" class="primary-btn" type="button">Done — Print label</button>
+      </div>
+      <p id="printStatus" class="empty-msg"></p>
+      <img id="printLabelImage" class="label-image hidden" alt="Printed barcode label" />
     </section>
 
     <!-- "Add to home screen" nudge, shown once after login/registration. -->

@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Request Lookup</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <!--
+    Lab-facing page: scan (or type) the request ID printed on a barcode
+    label to see the requesting doctor's confirmed transcript. Deliberately
+    a SEPARATE, unauthenticated page — see README's "Barcode label
+    printing" section for why that's an accepted POC-stage tradeoff, and
+    backend/main.py's GET /print-lookup/{id} for the endpoint this calls.
+
+    A handheld barcode scanner acts as a keyboard: scanning types the code
+    into whichever input is focused, then sends Enter — so the input below
+    is auto-focused and the form submits on Enter with no extra wiring.
+  -->
+  <main class="app screen">
+    <h1>Request Lookup</h1>
+    <p class="subtitle">Scan or type the barcode's request ID</p>
+
+    <form id="lookupForm" class="auth-form">
+      <label for="requestIdInput">Request ID</label>
+      <input
+        id="requestIdInput"
+        type="text"
+        autocomplete="off"
+        autocapitalize="characters"
+        placeholder="PR260929-7K4M"
+        required
+      />
+      <button class="primary-btn" type="submit">Look up</button>
+    </form>
+
+    <p id="lookupStatus" class="empty-msg"></p>
+
+    <section id="resultSection" class="transcript hidden" aria-live="polite">
+      <div class="transcript-header">
+        <h2>Confirmed request</h2>
+      </div>
+      <p class="match-candidate" id="resultMeta"></p>
+      <p id="resultText" class="transcript-text"></p>
+      <img id="resultLabelImage" class="label-image" alt="Printed barcode label" />
+    </section>
+  </main>
+
+  <script src="lookup.js"></script>
+</body>
+</html>

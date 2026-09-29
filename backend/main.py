@@ -6,8 +6,16 @@ then runs field_extraction.py to turn the transcript into a structured
 pathology request (dates/times deterministically normalized via
 datetime_normalize.py, "tests required" resolved to canonical NHLS/LOINC
 names via terminology_normalize.py) and a clinician-facing reconstructed
-transcript. No patient identifiers, no database — the server is stateless;
-confirmed data is saved client-side only.
+transcript. Transcription itself is stateless — nothing from /transcribe
+is stored server-side.
+
+The one deliberate exception is /print-label: once a doctor finalizes a
+request, its confirmed transcript IS stored server-side (see
+print_records.py), because that's what makes the printed barcode
+scannable/look-up-able by lab staff later (GET /print-lookup/{id}). See
+print_records.py's docstring for why this was a considered, confirmed
+change from this project's original fully-stateless design, not an
+oversight.
 
 Run it with:
     uvicorn main:app --host 0.0.0.0 --port 8000
@@ -19,12 +27,15 @@ so the SAME code runs on a plain laptop CPU and on a GPU machine.
 import os
 import tempfile
 
-from fastapi import FastAPI, File, UploadFile
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from faster_whisper import WhisperModel
+from pydantic import BaseModel
 
 import field_extraction
+import label_printing
 import matching
+import print_records
 
 # --------------------------------------------------------------------------- #
 # Configuration (all overridable via environment variables)
@@ -67,6 +78,8 @@ print(f"Loading Whisper model '{WHISPER_MODEL}' on {DEVICE} ({COMPUTE_TYPE})..."
 model = WhisperModel(WHISPER_MODEL, device=DEVICE, compute_type=COMPUTE_TYPE)
 print("Model loaded. Ready.")
 
+print_records.init_db()
+
 # --------------------------------------------------------------------------- #
 # FastAPI app
 # --------------------------------------------------------------------------- #
@@ -94,7 +107,82 @@ def health():
         "device": DEVICE,
         "compute_type": COMPUTE_TYPE,
         "terminology_loaded": matching._READY,
+        "printer_connection": label_printing.PRINTER_CONNECTION,
     }
+
+
+class PrintLabelRequest(BaseModel):
+    doctor_name: str
+    hpcsa_number: str
+    raw_text: str
+    normalized_text: str
+    structured: dict = {}
+
+
+@app.post("/print-label")
+def print_label(body: PrintLabelRequest):
+    """Finalizes a confirmed request: renders ONE label image, saves the
+    digital record with it FIRST (so it can never be lost to a printer
+    hiccup), then sends that SAME image to the physical printer — two
+    identical barcodes for the one request, never rendered twice (so they
+    can't drift), one printed and one returned here + stored for the PWA/
+    lookup page to display. A printer failure is reported back, never
+    silently swallowed — the frontend shows "digital copy saved, printer
+    error: ..." rather than looking like the whole action failed."""
+    for _ in range(5):  # retry only on the (very unlikely) id collision
+        request_id = label_printing.generate_request_id()
+        image = label_printing.render_label_image(body.doctor_name, request_id)
+        label_image = label_printing.image_to_data_url(image)
+        try:
+            print_records.save_record(
+                request_id=request_id,
+                doctor_name=body.doctor_name,
+                hpcsa_number=body.hpcsa_number,
+                raw_text=body.raw_text,
+                normalized_text=body.normalized_text,
+                structured=body.structured,
+                print_status="pending",
+                label_image_base64=label_image,
+            )
+            break
+        except Exception as exc:  # noqa: BLE001 — sqlite3.IntegrityError on PK collision
+            if "UNIQUE" not in str(exc).upper():
+                raise
+    else:
+        raise HTTPException(status_code=500, detail="Could not allocate a unique request ID")
+
+    try:
+        label_printing.print_label_image(image)
+    except label_printing.PrinterConnectionError as exc:
+        print_records.update_print_status(request_id, "print_failed", str(exc))
+        return {
+            "request_id": request_id, "print_status": "print_failed",
+            "print_error": str(exc), "label_image": label_image,
+        }
+    except Exception as exc:  # noqa: BLE001 — never let a printer failure crash the request
+        print_records.update_print_status(request_id, "print_failed", str(exc))
+        return {
+            "request_id": request_id, "print_status": "print_failed",
+            "print_error": str(exc), "label_image": label_image,
+        }
+
+    print_records.update_print_status(request_id, "printed")
+    return {
+        "request_id": request_id, "print_status": "printed",
+        "print_error": None, "label_image": label_image,
+    }
+
+
+@app.get("/print-lookup/{request_id}")
+def print_lookup(request_id: str):
+    """For lab staff: scan (or type) the printed barcode's request ID to
+    retrieve the doctor's confirmed transcript. Deliberately unauthenticated
+    (see README) — acceptable for this POC stage since the ID itself is the
+    access key, not something to harden further without a real deployment."""
+    record = print_records.get_record(request_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="No request found with that ID")
+    return record
 
 
 @app.post("/transcribe")
