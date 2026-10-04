@@ -184,6 +184,50 @@ def test_identifiers_remain_untouched_by_clinical_terminology():
         assert result[field_key]["value"] == result[field_key]["raw"]
 
 
+def test_specimen_requirements_derived_without_touching_other_fields():
+    transcript = (
+        "Patient name, Jane Doe. Clinical history, hypertension, HTN. "
+        "Tests required, FBC, CRP, U and E, LFT."
+    )
+    result = extract_fields(transcript)
+
+    by_label = {g["label"]: g["tests"] for g in result["specimen_requirements"]}
+    assert by_label["PURPLE — EDTA"] == ["Full Blood Count"]
+    assert by_label["YELLOW — Serum"] == [
+        "C-reactive protein",
+        "Urea and Electrolytes",
+        "Liver Function Tests",
+    ]
+
+    # tests_required itself is completely unaffected.
+    normalized = {t["raw"]: t["normalized"] for t in result["tests_required"]}
+    assert normalized["FBC"] == "Full Blood Count"
+    assert normalized["LFT"] == "Liver Function Tests"
+
+    # Every other field is untouched — no specimen-mapping leakage.
+    assert result["clinical_history"]["value"] == "hypertension, Hypertension (HTN)"
+    assert result["patient_name"]["value"] == "Jane Doe"
+
+    # The reconstructed clinician-facing transcript never mentions
+    # specimens — this is additive structured metadata only, not another
+    # transcript-normalization stage.
+    normalized_text = build_normalized_text(result)
+    assert "specimen" not in normalized_text.lower()
+    assert "PURPLE" not in normalized_text
+    assert "Tests required: Full Blood Count (FBC), C-reactive protein (CRP)" in normalized_text
+
+
+def test_specimen_requirements_excludes_ambiguous_tests():
+    transcript = "Clinical history, cough. Tests required, FBC, TB."
+    result = extract_fields(transcript)
+
+    by_raw = {t["raw"]: t for t in result["tests_required"]}
+    assert by_raw["TB"]["status"] == "ambiguous"  # unaffected — still ambiguous
+
+    all_specimen_tests = [t for g in result["specimen_requirements"] for t in g["tests"]]
+    assert all_specimen_tests == ["Full Blood Count"]  # TB excluded, never guessed
+
+
 def test_empty_transcript_returns_empty_structure():
     result = extract_fields("")
     assert result["unparsed_text"] == []

@@ -1,17 +1,16 @@
-// ===========================================================================
-// CONFIG — point this at your backend.
-// ---------------------------------------------------------------------------
-// Local testing on the same machine: "http://localhost:8000".
-// From a PHONE, localhost means the phone itself, so use the laptop's LAN IP,
-// e.g. "http://192.168.1.20:8000". See the README for the HTTPS caveat: the mic
-// only works on https:// or on http://localhost.
-const BACKEND_URL = "http://localhost:8000";
-// ===========================================================================
+// BACKEND_URL comes from config.js (loaded before this file — see
+// index.html's <script> order) so it's configured in exactly one place
+// for the whole frontend, not duplicated per page.
 
 const recordBtn = document.getElementById("recordBtn");
 const statusEl = document.getElementById("status");
 const transcriptEl = document.getElementById("transcript");
 const toggleRawBtn = document.getElementById("toggleRawBtn");
+const editTranscriptBtn = document.getElementById("editTranscriptBtn");
+const transcriptEditArea = document.getElementById("transcriptEditArea");
+const transcriptEditActions = document.getElementById("transcriptEditActions");
+const saveTranscriptEditBtn = document.getElementById("saveTranscriptEditBtn");
+const cancelTranscriptEditBtn = document.getElementById("cancelTranscriptEditBtn");
 
 const testsSection = document.getElementById("testsSection");
 const testsList = document.getElementById("testsList");
@@ -19,15 +18,23 @@ const testsEmpty = document.getElementById("testsEmpty");
 const confirmTestsBtn = document.getElementById("confirmTestsBtn");
 const skipTestsBtn = document.getElementById("skipTestsBtn");
 
+const specimenSection = document.getElementById("specimenSection");
+const specimenGroups = document.getElementById("specimenGroups");
+
 const printSection = document.getElementById("printSection");
 const doneBtn = document.getElementById("doneBtn");
+const retryPrintBtn = document.getElementById("retryPrintBtn");
 const printStatus = document.getElementById("printStatus");
 const printLabelImage = document.getElementById("printLabelImage");
 
+let printStatusPollTimer = null; // see pollPrintStatus() — cleared on a new submission/recording
+
+let currentRequestId = null; // set once /print-label succeeds; used by polling + Retry Print
 let lastTestsRequired = []; // the tests_required items currently rendered
 let currentNormalizedText = "";
 let currentRawText = "";
 let showingRaw = false;
+let editingTranscript = false; // see enterEditMode()/saveTranscriptEdit()/cancelTranscriptEdit()
 let currentStructured = {}; // the full structured object from the last transcription
 let currentEntryId = null; // the History entry id the current transcript is saved under
 
@@ -50,6 +57,7 @@ recordBtn.addEventListener("click", async () => {
 
 async function startRecording() {
   hideTests();
+  hideSpecimenGroups();
   hidePrintSection();
   closeAmbiguousPopup();
   resetTranscriptView();
@@ -132,6 +140,7 @@ async function sendForTranscription(blob) {
       : null;
     if (currentEntryId) {
       renderTests(currentEntryId, currentStructured.tests_required || []);
+      renderSpecimenGroups(currentStructured.specimen_requirements || []);
       showPrintSection();
     }
 
@@ -255,6 +264,7 @@ function updateTranscriptView() {
 }
 
 function resetTranscriptView() {
+  exitEditMode();
   currentNormalizedText = "";
   currentRawText = "";
   currentStructured = {};
@@ -268,6 +278,63 @@ toggleRawBtn.addEventListener("click", () => {
   showingRaw = !showingRaw;
   updateTranscriptView();
 });
+
+// ---------------------------------------------------------------------------
+// Transcript edit mode — free-text correction (e.g. a Whisper spelling
+// mistake) before the doctor confirms/finalizes. Deliberately narrow: this
+// only changes the normalized_text STRING that gets displayed, saved to
+// History, and submitted to /print-label — it never re-runs transcription
+// or re-extracts tests_required/other structured fields from the edited
+// text. renderNormalizedHtml() already tolerates an ambiguous-term marker
+// no longer being found in the text (it just skips highlighting it), so
+// editing through a marker's text degrades gracefully rather than erroring
+// — the doctor should use the ambiguous-term popup or Tests required panel
+// for anything beyond wording.
+// ---------------------------------------------------------------------------
+
+function enterEditMode() {
+  if (!currentNormalizedText && !currentRawText) return; // nothing to edit yet
+  showingRaw = false;
+  editingTranscript = true;
+  transcriptEditArea.value = currentNormalizedText;
+  transcriptEl.classList.add("hidden");
+  toggleRawBtn.classList.add("hidden");
+  editTranscriptBtn.classList.add("hidden");
+  transcriptEditArea.classList.remove("hidden");
+  transcriptEditActions.classList.remove("hidden");
+  doneBtn.disabled = true; // avoid submitting a stale pre-edit version mid-edit
+  transcriptEditArea.focus();
+}
+
+function exitEditMode() {
+  editingTranscript = false;
+  transcriptEditArea.value = "";
+  transcriptEditArea.classList.add("hidden");
+  transcriptEditActions.classList.add("hidden");
+  transcriptEl.classList.remove("hidden");
+  toggleRawBtn.classList.remove("hidden");
+  editTranscriptBtn.classList.remove("hidden");
+  doneBtn.disabled = false;
+}
+
+function saveTranscriptEdit() {
+  currentNormalizedText = transcriptEditArea.value;
+  exitEditMode();
+  updateTranscriptView();
+  if (currentEntryId) {
+    updateHistoryText(currentEntryId, currentNormalizedText);
+  }
+  setStatus("Transcript updated.");
+}
+
+function cancelTranscriptEdit() {
+  exitEditMode();
+  setStatus("Edit cancelled.");
+}
+
+editTranscriptBtn.addEventListener("click", enterEditMode);
+saveTranscriptEditBtn.addEventListener("click", saveTranscriptEdit);
+cancelTranscriptEditBtn.addEventListener("click", cancelTranscriptEdit);
 
 // ---------------------------------------------------------------------------
 // Inline ambiguous-term click-to-choose popup
@@ -358,7 +425,7 @@ function openAmbiguousPopup(anchorEl, entry) {
   }, 0);
 }
 
-function resolveAmbiguousItem(entry, candidate) {
+async function resolveAmbiguousItem(entry, candidate) {
   const replacement = `${candidate.canonical_name} (${entry.raw})`;
   const pos = nthIndexOf(currentNormalizedText, entry.marker, entry.occurrenceIndex);
   if (pos !== -1) {
@@ -393,9 +460,36 @@ function resolveAmbiguousItem(entry, candidate) {
   updateTranscriptView();
   if (entry.field === "tests_required") {
     renderTests(currentEntryId, currentStructured.tests_required || []);
+    await refreshSpecimenRequirements();
   }
   updateHistoryText(currentEntryId, currentNormalizedText);
   setStatus(`Resolved "${entry.raw}" → ${candidate.canonical_name}.`);
+}
+
+// Specimen groups are shown from structured.specimen_requirements, which
+// the backend computes once from tests_required at transcription time
+// (field_extraction.py). Resolving an inline ambiguous test changes
+// tests_required client-side afterwards, so that snapshot goes stale —
+// this asks the SAME curated mapping (specimen_mapping.py, via
+// POST /specimen-requirements) to recompute it from the current
+// tests_required, rather than duplicating that dictionary in JS where it
+// could drift out of sync with the Python one. Never blocks/breaks the
+// rest of the resolution flow if the request fails — the specimen
+// section just keeps showing its last-known groups.
+async function refreshSpecimenRequirements() {
+  try {
+    const res = await fetch(`${BACKEND_URL}/specimen-requirements`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tests_required: currentStructured.tests_required || [] }),
+    });
+    if (!res.ok) throw new Error(`Server responded ${res.status}`);
+    const data = await res.json();
+    currentStructured.specimen_requirements = data.specimen_requirements;
+    renderSpecimenGroups(currentStructured.specimen_requirements);
+  } catch (err) {
+    console.error("Failed to refresh specimen requirements:", err);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -408,6 +502,22 @@ function hideTests() {
   testsSection.classList.add("hidden");
   testsList.innerHTML = "";
   lastTestsRequired = [];
+}
+
+// Purely additive/display-only: renders backend/specimen_mapping.py's
+// grouping of the CONFIRMED tests_required collection. Never edits the
+// Tests required section above, never recomputed client-side (e.g.
+// resolving an ambiguous test inline does NOT update this — it reflects
+// exactly what the server computed from tests_required at transcription
+// time), and hides entirely rather than showing an empty section when
+// there's nothing to group (e.g. no tests were dictated at all).
+function renderSpecimenGroups(groups) {
+  renderSpecimenGroupsInto(specimenGroups, specimenSection, groups);
+}
+
+function hideSpecimenGroups() {
+  specimenGroups.innerHTML = "";
+  specimenSection.classList.add("hidden");
 }
 
 function renderTests(entryId, testsRequired) {
@@ -517,10 +627,19 @@ skipTestsBtn.addEventListener("click", () => {
 // confirm/save — pressing it doesn't depend on that panel being used.
 // ---------------------------------------------------------------------------
 
+function stopPrintStatusPolling() {
+  if (printStatusPollTimer) {
+    clearTimeout(printStatusPollTimer);
+    printStatusPollTimer = null;
+  }
+}
+
 function showPrintSection() {
   printStatus.textContent = "";
   printLabelImage.classList.add("hidden");
   printLabelImage.removeAttribute("src");
+  retryPrintBtn.classList.add("hidden");
+  stopPrintStatusPolling();
   printSection.classList.remove("hidden");
 }
 
@@ -529,6 +648,48 @@ function hidePrintSection() {
   printStatus.textContent = "";
   printLabelImage.classList.add("hidden");
   printLabelImage.removeAttribute("src");
+  retryPrintBtn.classList.add("hidden");
+  stopPrintStatusPolling();
+}
+
+// Printing is asynchronous: /print-label only queues a print job (see
+// backend/print_jobs.py) and returns immediately — a separate local
+// print agent (backend/print_agent.py) claims it and does the actual
+// printing, possibly seconds later, possibly on a machine far from
+// wherever this browser is. This polls GET /print-status/{request_id}
+// every 3s until that agent reports a final printed/failed outcome.
+// Closing the browser just stops this polling loop — the queued job
+// keeps processing server-side regardless (see README's "Local print
+// agent" section).
+async function pollPrintStatus(requestId) {
+  if (requestId !== currentRequestId) return; // superseded by a newer submission
+  try {
+    const res = await fetch(`${BACKEND_URL}/print-status/${encodeURIComponent(requestId)}`);
+    if (!res.ok) throw new Error(`Server responded ${res.status}`);
+    const data = await res.json();
+
+    if (data.print_status === "printed") {
+      printStatus.textContent = `Printed — Request ID: ${requestId}`;
+      retryPrintBtn.classList.add("hidden");
+      return;
+    }
+    if (data.print_status === "failed") {
+      // A printer failure never looks like data loss: the digital copy
+      // is already saved server-side regardless of print_status.
+      printStatus.textContent =
+        `Digital copy saved (Request ID: ${requestId}) — ` +
+        `printer error: ${data.print_error}. Check the print station.`;
+      retryPrintBtn.classList.remove("hidden");
+      return;
+    }
+
+    printStatus.textContent = `Request submitted — Request ID: ${requestId}. Waiting for printer…`;
+    printStatusPollTimer = setTimeout(() => pollPrintStatus(requestId), 3000);
+  } catch (err) {
+    console.error(err);
+    printStatus.textContent = "Failed to reach the server: " + err.message;
+    printStatusPollTimer = setTimeout(() => pollPrintStatus(requestId), 3000);
+  }
 }
 
 doneBtn.addEventListener("click", async () => {
@@ -540,7 +701,8 @@ doneBtn.addEventListener("click", async () => {
   }
 
   doneBtn.disabled = true;
-  printStatus.textContent = "Printing…";
+  retryPrintBtn.classList.add("hidden");
+  printStatus.textContent = "Submitting…";
 
   try {
     const res = await fetch(`${BACKEND_URL}/print-label`, {
@@ -548,6 +710,7 @@ doneBtn.addEventListener("click", async () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         doctor_name: doctor.name,
+        doctor_phone: doctor.cell,
         hpcsa_number: doctor.hpcsa,
         raw_text: currentRawText,
         normalized_text: currentNormalizedText,
@@ -560,19 +723,13 @@ doneBtn.addEventListener("click", async () => {
     }
 
     const data = await res.json();
-    if (data.print_status === "printed") {
-      printStatus.textContent = `Printed — Request ID: ${data.request_id}`;
-    } else {
-      // A printer failure never looks like data loss: the digital copy
-      // is already saved server-side regardless of print_status.
-      printStatus.textContent =
-        `Digital copy saved (Request ID: ${data.request_id}) — ` +
-        `printer error: ${data.print_error}. Check the printer connection and try again.`;
-    }
+    currentRequestId = data.request_id;
+    printStatus.textContent = `Request submitted — Request ID: ${data.request_id}. Waiting for printer…`;
 
-    // Two identical barcodes for this request: one just sent to the
-    // physical printer, this one (the exact same image) shown here and
-    // saved onto the History entry so the digital copy always has it too.
+    // Two identical barcodes for this request: the one a print agent
+    // will eventually send to the physical printer, and this one (the
+    // exact same image, rendered once here) shown immediately and saved
+    // onto the History entry — never re-rendered, so they can't drift.
     if (data.label_image) {
       printLabelImage.src = data.label_image;
       printLabelImage.classList.remove("hidden");
@@ -580,10 +737,35 @@ doneBtn.addEventListener("click", async () => {
         attachLabelImage(currentEntryId, data.label_image);
       }
     }
+
+    stopPrintStatusPolling();
+    printStatusPollTimer = setTimeout(() => pollPrintStatus(data.request_id), 3000);
   } catch (err) {
     console.error(err);
     printStatus.textContent = "Failed to reach the server: " + err.message;
   } finally {
     doneBtn.disabled = false;
+  }
+});
+
+retryPrintBtn.addEventListener("click", async () => {
+  if (!currentRequestId) return;
+  retryPrintBtn.disabled = true;
+  printStatus.textContent = "Retrying…";
+
+  try {
+    const res = await fetch(
+      `${BACKEND_URL}/print-jobs/${encodeURIComponent(currentRequestId)}/retry`,
+      { method: "POST" }
+    );
+    if (!res.ok) throw new Error(`Server responded ${res.status}`);
+    retryPrintBtn.classList.add("hidden");
+    stopPrintStatusPolling();
+    printStatusPollTimer = setTimeout(() => pollPrintStatus(currentRequestId), 500);
+  } catch (err) {
+    console.error(err);
+    printStatus.textContent = "Failed to reach the server: " + err.message;
+  } finally {
+    retryPrintBtn.disabled = false;
   }
 });

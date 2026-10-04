@@ -15,10 +15,22 @@ the printer directly is a dead end on iPhone/iPad. Routing the print
 through the backend means the PWA works identically on every platform —
 it's an ordinary HTTPS POST, not a hardware API call.
 
-The label encodes a short REQUEST ID only (never the transcript itself —
-barcodes can't hold that much data at a scannable print size) plus the
-doctor's name as plain text. Scanning the barcode is how lab staff look up
-the full confirmed transcript, via print_records.py + GET /print-lookup.
+The label's scannable code is a QR code encoding a LOOKUP URL —
+"{FRONTEND_URL}/lookup.html?id={request_id}" — not the request or any
+contact details themselves. The QR is a reference to the server-side
+record, never a container for it: scanning it opens the lookup page
+straight to that request (frontend/lookup.js reads the `?id=` query
+param), which is what lets a pathologist on a different device just
+scan and go rather than also having to type the ID. Doctor contact
+details (name, phone) are looked up server-side too, via
+GET /print-lookup/{request_id} (see print_records.py) — this is a
+privacy choice, not an oversight: encoding a doctor's phone number
+directly into a physical label anyone could find or photograph is worse
+than requiring a server lookup that at least goes through this project's
+one access-control mechanism (the request ID itself as the key). The
+request ID is ALSO drawn as separate plain text under the QR code, so
+it's still readable/typeable by hand if scanning fails or the QR points
+at a stale FRONTEND_URL.
 
 Setup note: niimprint's package metadata declares Python "<3.12", which is
 overly conservative — nothing in the actual code is 3.12-incompatible, so
@@ -33,8 +45,7 @@ import os
 import random
 from datetime import datetime
 
-import barcode
-from barcode.writer import ImageWriter
+import qrcode
 from PIL import Image, ImageDraw, ImageFont
 
 # --------------------------------------------------------------------------- #
@@ -48,6 +59,13 @@ PRINTER_DENSITY = int(os.getenv("PRINTER_DENSITY", "3"))
 LABEL_WIDTH_MM = float(os.getenv("PRINTER_LABEL_WIDTH_MM", "50"))
 LABEL_HEIGHT_MM = float(os.getenv("PRINTER_LABEL_HEIGHT_MM", "30"))
 LABEL_DPI = 203  # NIIMBOT B21 hardware resolution — not user-configurable
+
+# Where frontend/lookup.html is actually served from — used to build the
+# QR's lookup URL. The default is a common local static-server address for
+# development; set this to your real hosted frontend URL (e.g.
+# "https://my-frontend.onrender.com") before printing any label meant to
+# be scanned from a different device.
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5500").rstrip("/")
 
 # Unambiguous alphabet for the random suffix — excludes 0/O and 1/I, which
 # are easily confused when a doctor has to read/type the ID by hand.
@@ -78,12 +96,26 @@ def _load_font(size: int) -> ImageFont.FreeTypeFont:
     return ImageFont.load_default(size=size)
 
 
-def render_label_image(doctor_name: str, request_id: str) -> Image.Image:
-    """Builds the label bitmap: doctor_name as text at the top, a Code128
-    barcode of request_id filling the space below — the same two-section
-    layout as the hand-drawn label sketch this feature was designed from.
-    Never encodes anything beyond request_id in the barcode itself; the
-    full record is looked up server-side via print_records.py."""
+def render_label_image(doctor_name: str, request_id: str, qr_payload: str | None = None) -> Image.Image:
+    """Builds the label bitmap: doctor_name as text at the top, a QR code
+    encoding the lookup URL for request_id below it, with request_id ALSO
+    drawn as separate plain text under the QR code so it's readable/
+    typeable by hand without a scanner. Same two-section layout as the
+    hand-drawn label sketch this feature was designed from. The QR never
+    carries anything beyond a reference (FRONTEND_URL + request_id) — the
+    actual request and any contact details are looked up server-side (see
+    this module's docstring for why).
+
+    `qr_payload` defaults to building the URL from this process's OWN
+    FRONTEND_URL (every existing call site — the hosted backend's own
+    display rendering). print_agent.py instead passes the EXACT string
+    the backend already computed for this job, so the agent's local
+    FRONTEND_URL (if it's even set) can never drift from what's actually
+    in the printed QR — two independently-configured env vars needing to
+    agree is a real footgun; this removes it rather than documenting
+    around it."""
+    if qr_payload is None:
+        qr_payload = f"{FRONTEND_URL}/lookup.html?id={request_id}"
     width_px = _mm_to_px(LABEL_WIDTH_MM)
     height_px = _mm_to_px(LABEL_HEIGHT_MM)
     margin = max(4, round(width_px * 0.04))
@@ -103,23 +135,31 @@ def render_label_image(doctor_name: str, request_id: str) -> Image.Image:
     draw.text((margin, margin), doctor_name, fill="black", font=font)
     text_bottom = margin + draw.textbbox((0, 0), doctor_name, font=font)[3]
 
-    # Barcode fills the remaining space below the text.
-    barcode_top = text_bottom + margin
-    barcode_w = max(1, width_px - 2 * margin)
-    barcode_h = max(1, height_px - barcode_top - margin)
-    code = barcode.get("code128", request_id, writer=ImageWriter())
-    bc_image = code.render(
-        writer_options={
-            "module_width": 0.3,
-            "module_height": 10.0,
-            "quiet_zone": 1.0,
-            "font_size": 0,
-            "text_distance": 0,
-            "write_text": False,
-        }
-    )
-    bc_image = bc_image.resize((barcode_w, barcode_h), Image.LANCZOS)
-    canvas.paste(bc_image, (margin, barcode_top))
+    # Small text line for the request ID, reserved at the very bottom, so
+    # it stays readable without a scanner regardless of QR size above it.
+    id_font = _load_font(max(8, round(height_px * 0.08)))
+    id_bbox = draw.textbbox((0, 0), request_id, font=id_font)
+    id_h = id_bbox[3] - id_bbox[1]
+
+    # QR code fills the remaining space between the name and the ID line.
+    qr_top = text_bottom + margin
+    qr_available_w = max(1, width_px - 2 * margin)
+    qr_available_h = max(1, height_px - qr_top - margin * 2 - id_h)
+
+    qr = qrcode.QRCode(border=1)
+    qr.add_data(qr_payload)
+    qr.make(fit=True)
+    qr_image = qr.make_image().get_image().convert("RGB")
+
+    # Fit within the remaining box WITHOUT distorting the aspect ratio.
+    qr_image.thumbnail((qr_available_w, qr_available_h), Image.LANCZOS)
+    qr_x = margin + (qr_available_w - qr_image.width) // 2
+    qr_y = qr_top + (qr_available_h - qr_image.height) // 2
+    canvas.paste(qr_image, (qr_x, qr_y))
+
+    id_x = margin + (qr_available_w - (id_bbox[2] - id_bbox[0])) // 2
+    id_y = qr_y + qr_image.height + margin
+    draw.text((id_x, id_y), request_id, fill="black", font=id_font)
 
     return canvas
 

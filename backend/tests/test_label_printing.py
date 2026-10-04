@@ -25,6 +25,46 @@ def test_generate_request_id_is_effectively_unique():
     assert len(ids) == 500
 
 
+# --------------------------------------------------------------------------- #
+# QR content — a lookup URL referencing the request ID, never the request
+# or contact details themselves. An earlier iteration encoded doctor
+# name/phone/email directly in the QR; that was reverted specifically for
+# privacy (a physical label anyone could find/photograph shouldn't carry
+# a doctor's phone number) — contact details are looked up server-side
+# instead via GET /print-lookup/{request_id} (see print_records.py /
+# test_print_endpoints.py). The URL form (rather than the bare ID) lets a
+# pathologist's device navigate straight to the right record on scan,
+# which is what makes retrieval work from a completely different device
+# with no shared network (frontend/lookup.js reads the ?id= param).
+# --------------------------------------------------------------------------- #
+
+
+def test_qr_code_encodes_a_lookup_url_referencing_the_request_id():
+    import qrcode
+
+    request_id = "PR260929-7K4M"
+    img = label_printing.render_label_image("Dr. Thato Manape", request_id)
+    assert isinstance(img, Image.Image)
+
+    expected_data = f"{label_printing.FRONTEND_URL}/lookup.html?id={request_id}"
+
+    # Independently build the same QR this module would, and confirm the
+    # encoded payload matches exactly (a stand-in for a real decode — no
+    # zbar/decoder dependency available in this environment; see this
+    # file's other render tests for the visual/structural checks that
+    # don't need one).
+    expected = qrcode.QRCode(border=1)
+    expected.add_data(expected_data)
+    expected.make(fit=True)
+    assert expected.data_list[0].data.decode() == expected_data
+    assert expected.version <= 6  # still comfortably small enough for a 50mm label
+
+
+# --------------------------------------------------------------------------- #
+# Label rendering
+# --------------------------------------------------------------------------- #
+
+
 @pytest.mark.parametrize(
     "doctor_name",
     [

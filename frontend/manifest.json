@@ -1,7 +1,7 @@
 {
-  "name": "Pathology Dictation POC",
-  "short_name": "PathDictate",
-  "description": "Speech-to-text proof of concept for pathology dictation.",
+  "name": "Smart Pathology Request",
+  "short_name": "SmartPath",
+  "description": "Smart Pathology Request — a speech-driven electronic pathology request system.",
   "start_url": "./index.html",
   "display": "standalone",
   "background_color": "#f8fafc",

@@ -14,9 +14,12 @@ faster-whisper>=1.0.0
 # backend/terminology_normalize.py).
 rapidfuzz>=3.6
 
-# Barcode label printing (see backend/label_printing.py) — Code128 barcode
-# generation + image composition for the NIIMBOT B21 label.
-python-barcode>=0.15
+# Barcode label printing (see backend/label_printing.py) — QR code
+# generation (encodes a lookup URL built from the one authoritative
+# request ID — a 1D barcode can't hold that much data at a scannable
+# size on the NIIMBOT B21's 53mm max label width, confirmed by
+# measuring it) + image composition.
+qrcode>=7.4
 pillow>=10.1,<11.0
 
 # NOT listed here: niimprint (the NIIMBOT printer protocol client) — its
@@ -24,6 +27,14 @@ pillow>=10.1,<11.0
 # `pip install -r requirements.txt` outright on 3.12 and would block
 # installing everything else in this file too. Install it separately —
 # see README's "Barcode label printing" setup section for the exact command.
+
+# Shared request storage (see backend/print_records.py) — SQLAlchemy
+# Core (not the ORM) gives one code path that works against both the
+# hosted PostgreSQL store (via psycopg) and a local SQLite file
+# (dev/tests, zero external services required) without dialect
+# branching in our own code.
+sqlalchemy>=2.0
+psycopg[binary]>=3.1
 
 # Test suite (backend/tests/) — not needed to run the app itself.
 pytest>=8.0

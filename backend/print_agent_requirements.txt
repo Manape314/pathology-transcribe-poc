@@ -1,0 +1,19 @@
+# Dependencies for print_agent.py ONLY — install this on the machine
+# physically connected to the NIIMBOT B21, NOT on the hosted backend.
+# Deliberately kept separate from requirements.txt so a hosted
+# `pip install -r requirements.txt` never pulls in hardware/printer
+# dependencies it will never use.
+#
+# Install with:
+#   pip install -r print_agent_requirements.txt
+#   pip install --ignore-requires-python "niimprint @ git+https://github.com/AndBondStyle/niimprint.git"
+# (see README's "Barcode label printing" section for why niimprint is a
+# separate command rather than a plain requirements.txt line)
+
+# Label rendering (shared with label_printing.py — must match the
+# hosted backend's versions so the SAME code produces the SAME image).
+qrcode>=7.4
+pillow>=10.1,<11.0
+
+# Outbound HTTPS polling against the hosted backend's print-job queue.
+requests>=2.31

@@ -522,6 +522,13 @@ h1 {
   color: var(--muted);
 }
 
+.transcript-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
 .transcript-header .nav-btn {
   padding: 0.25rem 0.6rem;
   font-size: 0.75rem;
@@ -531,6 +538,26 @@ h1 {
   margin: 0;
   line-height: 1.5;
   white-space: pre-wrap;
+}
+
+.transcript-edit-area {
+  width: 100%;
+  min-height: 8rem;
+  margin: 0;
+  padding: 0.6rem 0.75rem;
+  font: inherit;
+  line-height: 1.5;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  resize: vertical;
+  box-sizing: border-box;
+}
+
+.transcript-edit-area:focus {
+  outline: 2px solid var(--teal);
+  outline-offset: 1px;
 }
 
 /* ---- Inline ambiguous-term highlighting + click-to-choose popup ---- */
@@ -626,4 +653,103 @@ h1 {
   border: 1px solid #e2e8f0;
   border-radius: 8px;
   background: #fff;
+}
+
+/* ---- Requesting doctor contact actions (lab lookup page) ---- */
+
+.contact-actions {
+  flex-wrap: wrap;
+}
+
+.contact-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  text-decoration: none;
+}
+
+.contact-icon {
+  width: 1rem;
+  height: 1rem;
+  flex-shrink: 0;
+}
+
+/* ---- Tubes Required — derived, display-only grouping of
+   confirmed tests_required (see backend/specimen_mapping.py). Lives
+   nested inside the Transcript / Confirmed request card. ---- */
+
+.specimen-section {
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid #e2e8f0;
+}
+
+.specimen-section-title {
+  margin: 0 0 0.75rem;
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+}
+
+.specimen-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.specimen-group {
+  padding: 0.6rem 0.85rem;
+  background: var(--bg);
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+}
+
+.specimen-group-label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0 0 0.4rem;
+  padding-bottom: 0.4rem;
+  border-bottom: 1px solid #e2e8f0;
+  font-size: 0.85rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+}
+
+/* A visual aid only, never the sole indicator — the label text always
+   names the colour in words too, so this adds nothing a colour-blind
+   reader can't already get from the text itself. */
+.specimen-swatch {
+  width: 0.9rem;
+  height: 0.9rem;
+  border-radius: 999px;
+  border: 1px solid rgba(0, 0, 0, 0.15);
+  flex-shrink: 0;
+}
+
+/* Shown instead of a swatch for groups with no tube colour (blood gas
+   syringe, unmapped) — plain text badge, same shape as the existing
+   ABBREV/NHLS/LOINC .source-badge elsewhere in this app. Same
+   supplementary-visual-aid role as the colour swatch: the label text
+   next to it is still the authoritative identifier. */
+.specimen-symbol {
+  flex-shrink: 0;
+  padding: 0.1rem 0.4rem;
+  border-radius: 999px;
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: #fff;
+  background: var(--muted);
+}
+
+.specimen-group-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.9rem;
 }

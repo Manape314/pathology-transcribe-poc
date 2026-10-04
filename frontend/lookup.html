@@ -37,6 +37,60 @@
 
     <p id="lookupStatus" class="empty-msg"></p>
 
+    <!-- Requesting doctor's contact details + actions. The phone number
+         is never in the QR/barcode itself (see backend/label_printing.py)
+         — it's fetched here from GET /print-lookup/{id} specifically so
+         it's only exposed to someone who can look the request up, not to
+         anyone who merely finds/photographs the physical label. -->
+    <section id="doctorContactSection" class="matches hidden" aria-live="polite">
+      <h2>Requesting Doctor</h2>
+      <p id="doctorContactName" class="match-name"></p>
+      <p id="doctorContactHpcsa" class="match-candidate"></p>
+      <p id="doctorContactPhoneText" class="match-candidate"></p>
+
+      <div id="doctorContactActions" class="matches-actions contact-actions hidden">
+        <a
+          id="callLink"
+          class="nav-btn contact-action"
+          href="#"
+          aria-label="Call the requesting doctor"
+        >
+          <svg aria-hidden="true" viewBox="0 0 24 24" class="contact-icon">
+            <path d="M6.6 10.8c1.4 2.8 3.8 5.1 6.6 6.6l2.2-2.2c.3-.3.7-.4 1-.2 1.1.4 2.3.6 3.6.6.6 0 1 .4 1 1V20c0 .6-.4 1-1 1-9.4 0-17-7.6-17-17 0-.6.4-1 1-1h3.5c.6 0 1 .4 1 1 0 1.2.2 2.5.6 3.6.1.4 0 .8-.3 1L6.6 10.8z" fill="currentColor"/>
+          </svg>
+          <span>Call</span>
+        </a>
+        <a
+          id="messageLink"
+          class="nav-btn contact-action"
+          href="#"
+          aria-label="Message the requesting doctor"
+        >
+          <svg aria-hidden="true" viewBox="0 0 24 24" class="contact-icon">
+            <path d="M4 4h16c.6 0 1 .4 1 1v12c0 .6-.4 1-1 1H8l-4.4 3.3c-.6.5-1.6.1-1.6-.7V5c0-.6.4-1 1-1z" fill="currentColor"/>
+          </svg>
+          <span>Message</span>
+        </a>
+        <button
+          id="copyNumberBtn"
+          type="button"
+          class="nav-btn contact-action"
+          aria-label="Copy the requesting doctor's phone number"
+        >
+          <svg aria-hidden="true" viewBox="0 0 24 24" class="contact-icon">
+            <path d="M8 3h9c.6 0 1 .4 1 1v13c0 .6-.4 1-1 1H8c-.6 0-1-.4-1-1V4c0-.6.4-1 1-1zm-4 4h2v14h11v2H5c-.6 0-1-.4-1-1V7z" fill="currentColor"/>
+          </svg>
+          <span>Copy number</span>
+        </button>
+      </div>
+      <p id="copyStatus" class="empty-msg" role="status"></p>
+    </section>
+
+    <!-- The Tubes Required block below the transcript text is
+         DERIVED, display-only metadata (backend/specimen_mapping.py) —
+         lives inside this same "Confirmed request" card per request, but
+         is rendered by its own function and never part of the transcript
+         text itself. -->
     <section id="resultSection" class="transcript hidden" aria-live="polite">
       <div class="transcript-header">
         <h2>Confirmed request</h2>
@@ -44,9 +98,16 @@
       <p class="match-candidate" id="resultMeta"></p>
       <p id="resultText" class="transcript-text"></p>
       <img id="resultLabelImage" class="label-image" alt="Printed barcode label" />
+
+      <div id="resultSpecimenSection" class="specimen-section hidden">
+        <h3 class="specimen-section-title">Tubes Required</h3>
+        <div id="resultSpecimenGroups" class="specimen-groups"></div>
+      </div>
     </section>
   </main>
 
+  <script src="config.js"></script>
+  <script src="specimen-render.js"></script>
   <script src="lookup.js"></script>
 </body>
 </html>

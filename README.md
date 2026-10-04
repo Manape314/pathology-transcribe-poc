@@ -1,4 +1,4 @@
-# Pathology Dictation POC — Speech to Text
+# Smart Pathology Request
 
 A proof of concept: a clinician logs in, records a spoken pathology request on
 a phone, the audio is sent to a server, [faster-whisper](https://github.com/SYSTRAN/faster-whisper)
@@ -277,6 +277,71 @@ Whisper output — is what `/transcribe` returns as `normalized_text` and
 what the PWA shows by default; `raw_text` is always included too and stays
 one click away behind the "View raw transcript" toggle.
 
+### Tubes Required
+
+`structured.specimen_requirements` is a small piece of **derived,
+additive** metadata, computed once `tests_required` is normalized
+(`backend/specimen_mapping.py`, called from `field_extraction.py`'s second
+pass): it groups the **confirmed** tests_required items by which
+tube/specimen they need, e.g.
+
+```
+PURPLE — EDTA
+  Full Blood Count
+YELLOW — Serum
+  C-reactive protein
+  Urea and Electrolytes
+  Liver Function Tests
+```
+
+This reads `tests_required` and nothing else, and writes only this one
+new key — it never edits `tests_required` itself, never touches
+`clinical_history`/`provisional_diagnosis`/`medication`/identifiers/dates,
+and never appears in `normalized_text` (the reconstructed transcript is
+completely unchanged by this feature; the PWA shows it nested inside the
+confirmed-request card as its own "Tubes Required" section, separate from
+"Tests required"). Only `status: "confirmed"` items are mapped — an
+ambiguous or unrecognized test is excluded, same as it would be from any
+other confirmed-only view.
+
+Resolving an inline ambiguous test (e.g. clicking "TB" → "Tuberculosis" or
+"Total Bilirubin" in the Tests required panel) changes `tests_required`
+client-side *after* the initial `/transcribe` response, so the frontend
+calls `POST /specimen-requirements` (body: `{tests_required}`) to
+recompute this group from the updated list — it re-runs the same
+`specimen_mapping.map_tests_to_specimens()` used server-side, so the
+curated dictionary has exactly one definition, never a JS copy that could
+drift out of sync. This is also why some of the resolved meanings behind
+`AMBIGUOUS_ABBREVIATIONS` are themselves in the curated dictionary now
+(e.g. "TB" → Total Bilirubin lands under YELLOW — Serum, "CT" → Chlamydia
+Trachomatis lands under URINE CONTAINER — Sterile, "BM" → Bone Marrow gets
+its own BONE MARROW — Aspirate/Biopsy Kit category) — but only where the
+resolved meaning genuinely is an orderable lab test. Where it resolves to
+a diagnosis or procedure instead (e.g. "TB" → Tuberculosis, "CT" →
+Computed Tomography), it correctly stays "Unmapped" — which test/specimen
+is right depends on which one was actually meant, and guessing would be a
+patient-safety risk, not a convenience.
+
+**Why this doesn't reuse `backend/data/nhls_tests.json`'s `specimen_type`
+field**: checked directly against this feature's own worked example and
+found unreliable — "Full Blood Count" incorrectly shows specimen_type
+"Specimen from potentially infected site in a universal container" (a
+clear PDF-extraction row-misalignment bug; FBC is a standard EDTA/
+purple-top draw), and panel names like "Urea and Electrolytes" or "Liver
+Function Tests" don't exist as single rows in that data at all (only
+their individual components do). A wrong tube colour is a real
+patient-safety issue (rejected specimen or invalid result), so
+`specimen_mapping.py` uses a small **hand-curated** dictionary instead —
+same trusted model as `terminology_normalize.ABBREVIATIONS` — seeded from
+standard phlebotomy tube-colour convention for the tests already in that
+dictionary. A confirmed test with no curated mapping yet (imaging/
+procedures like ECG or MRI, skin tests like PPD, or genuinely
+lab-convention-variable ones like ESR or crossmatch, which are
+deliberately excluded rather than guessed) shows up in its own
+"Unmapped — verify specimen requirements" group — never silently dropped,
+never force-assigned a colour. It's a starting set, extensible the same
+way the abbreviation dictionaries are.
+
 ### Running the tests
 
 ```bash
@@ -304,19 +369,46 @@ every line of the extraction/normalization/matching code running for real
 test, and one confirming an ambiguous abbreviation reaches the frontend
 with its full candidate list through the actual endpoint.
 
-Also covers barcode label generation and printing (`test_label_printing.py`
+Also covers specimen/tube mapping (`test_specimen_mapping.py` — matches
+this feature's own worked example, confirms only `status: "confirmed"`
+tests are mapped, confirms an unmapped test is shown in its own group
+rather than dropped or guessed at; `test_field_extraction.py` additionally
+confirms `specimen_requirements` never leaks into `tests_required`, any
+other field, or the reconstructed `normalized_text`), barcode label
+generation and printing (`test_label_printing.py`
 — request ID format/uniqueness, label image sizing, shrink-to-fit for long
 doctor names, and `niimprint` calls mocked so no physical printer is
-needed), the digital-record store (`test_print_records.py` — save/get
-roundtrip, and the print-failure-still-saves-a-record case, against a temp
-SQLite file so the real `print_records.db` is never touched), and the real
-`/print-label` + `/print-lookup` endpoints (`test_print_endpoints.py`).
+needed), the shared request store including its column backfills
+(`test_print_records.py` — save/get roundtrip, the
+print-failure-still-saves-a-record case, a record saved with no phone
+number, and simulating a pre-migration database file to confirm
+`init_db()` backfills missing columns — including `created_at` for rows
+that predate it — without touching existing rows; all against a disposable
+temp SQLite engine so the real `print_records.db` is never touched), the
+SQLite → PostgreSQL migration script (`test_migration_script.py` — row
+copying, idempotent re-runs, a historical record missing an optional
+field), and the real `/print-label` + `/print-lookup` endpoints — phone
+number included, plus malformed-ID (`400`) and database-unreachable
+(`503`) handling (`test_print_endpoints.py`).
 
-The Whisper-dependent `test_transcribe_endpoint.py` and
-`test_print_endpoints.py` (it imports `main`, which loads Whisper) both
-need enough free RAM to load `large-v3` fresh (confirmed on this machine:
-fails with `mkl_malloc: failed to allocate memory` under ~2GB free) — the
-other test files have no such dependency and run in a few seconds.
+The print-job queue has its own two files: `test_print_jobs.py` (unit
+tests against `print_jobs.py` directly — atomic claim, a second claim on
+an already-claimed job getting nothing back, a stale "printing" job
+becoming claimable again, auto-fail past `MAX_PRINT_ATTEMPTS`,
+retry-reuses-the-same-row vs. reprint-creates-a-new-one) and
+`test_print_job_endpoints.py` (through the real HTTP routes — agent-token
+rejection including the fail-closed-when-unconfigured case, the claimed
+job's payload containing no clinical fields at all, mismatched-station
+`409`s, and the doctor-facing status/retry/reprint endpoints). Neither
+requires real NIIMBOT hardware — `print_agent.py` is a separate,
+standalone script the hosted backend never imports.
+
+The Whisper-dependent `test_transcribe_endpoint.py`, `test_print_endpoints.py`,
+and `test_print_job_endpoints.py` (each imports `main`, which loads
+Whisper) need enough free RAM to load `large-v3` fresh (confirmed on this
+machine: fails with `mkl_malloc: failed to allocate memory` under ~2GB
+free) — the other test files have no such dependency and run in a few
+seconds.
 
 ## Frontend — serve it
 
@@ -328,8 +420,10 @@ cd frontend
 python -m http.server 5173
 ```
 
-Then open <http://localhost:5173/>. Set the backend address at the top of
-`frontend/app.js`:
+Then open <http://localhost:5173/>. Set the backend address in
+`frontend/config.js` — the ONE place it's configured; `app.js` and
+`lookup.js` both read this same global, so you never need to edit more
+than one file to point the whole frontend at a different backend:
 
 ```js
 const BACKEND_URL = "http://localhost:8000";
@@ -349,85 +443,235 @@ Browsers only grant microphone access on a **secure context**: `https://` **or**
 ## Barcode label printing
 
 Once a doctor presses **"Done — Print label"**, the backend renders ONE
-barcode label image and produces **two identical copies of it**: one sent
+label image and produces **two identical copies of it**: one sent
 straight to a physical **NIIMBOT B21** thermal printer, the other returned
 to the PWA and saved onto the History entry (`backend/label_printing.py`'s
 `image_to_data_url` — the exact same PNG bytes both times, never
 re-rendered separately, so the two can't drift apart) — no manual step in
-the NIIMBOT app, ever. The label has the doctor's name as plain text and a
-Code128 barcode of a short request ID below it (never the transcript
-itself — barcodes can't hold that much data at a printable/scannable
-size). Lab staff scan (or type) that ID on a separate page
-(`frontend/lookup.html`, which also displays the same label image) to see
-the doctor's confirmed transcript.
+the NIIMBOT app, ever. The label has the doctor's name as plain text, a QR
+code below it, and the request ID printed as plain text under the QR code
+too (readable/typeable by hand if no scanner is available). Lab staff scan
+(or type the ID) on a separate page (`frontend/lookup.html`, which also
+displays the same label image) to see the doctor's confirmed transcript.
 
-**Why this runs on the server, not in the browser**: iOS Safari supports
-neither the Web Bluetooth nor the WebUSB APIs, and Apple has stated no
-intent to add them — so a PWA that talks to the printer directly from the
-browser is a dead end on iPhone/iPad from day one. Since this project's
-backend already runs on the same machine the printer connects to,
-`POST /print-label` does the actual USB/Bluetooth printer communication
-server-side (via [`niimprint`](https://github.com/AndBondStyle/niimprint),
-a community reverse-engineered protocol client — NIIMBOT itself publishes
-neither a protocol nor a standard Windows print driver). The PWA just
-makes an ordinary HTTPS request, so this works identically on Android,
-iOS, and desktop from the start.
+**Why a QR code, not a classic 1D barcode**: an earlier iteration of this
+feature encoded a JSON payload (`{id, name, phone, email}`) in it, which a
+1D barcode (Code128) measured **~330mm wide** to hold at a reliably
+scannable density — the B21 physically maxes out at 53mm, so that
+genuinely didn't fit. That contact-info-in-the-barcode design was then
+**deliberately reverted for privacy** (see "Contacting the requesting
+doctor" below). The QR code now encodes a **lookup URL** —
+`{FRONTEND_URL}/lookup.html?id={request_id}` — rather than the bare ID:
+scanning it takes a pathologist on any device straight to that request
+(`frontend/lookup.js` reads the `?id=` query param on load and looks it
+up automatically — no separate "paste the ID in" step needed), which is
+what makes retrieval work from a different device with no shared
+network. It's still only ever a **reference** to the server-side record,
+never the request/transcript itself (that's still too much data at a
+scannable size, and would defeat the privacy point of looking it up
+server-side) — and the request ID is also printed as plain text under
+the QR so it's still typeable by hand if scanning fails or the QR points
+at a stale `FRONTEND_URL`. The QR code format itself (over a 1D barcode)
+was kept from that earlier iteration regardless of payload shape, per an
+explicit decision to keep using it going forward. The tradeoff versus a
+classic 1D barcode: lab staff need a 2D/camera-capable scanner — most
+modern handheld scanners and any smartphone camera can read QR codes, but
+older 1D-only laser scanners can't.
+
+**Why physical printing is NOT done by the hosted backend**: iOS Safari
+supports neither the Web Bluetooth nor the WebUSB APIs (so the *browser*
+was always a dead end on iPhone/iPad), and once the backend itself moved
+to a hosted server (Render), it stopped being on the same machine as the
+printer too — a hosted FastAPI process simply has no USB/Bluetooth path
+to a NIIMBOT sitting at the hospital. So `/print-label` doesn't print at
+all: it saves the record, queues a **print job**, and returns
+immediately. A separate, small, standalone process — `print_agent.py`,
+running on whichever machine the B21 is actually plugged into — polls
+that queue over plain HTTPS and does the real printing. See "Local print
+agent" below for the full picture; this is what makes one click from
+Windows, macOS, Android, *or* iOS all work identically, without the
+doctor's own device needing to touch the printer, Bluetooth, USB, or
+even be on the same network as it.
 
 **This is also why the project is no longer fully stateless**: scanning a
 barcode has to look something up against, and that can't live only in the
 doctor's own browser the way everything else here does. The confirmed
 transcript (which may include patient details the doctor dictated) is
-stored server-side in SQLite (`backend/print_records.py`,
-`backend/data/print_records.db` — already gitignored) and kept
-indefinitely. This was a deliberate, discussed tradeoff, not an oversight
-— see `print_records.py`'s docstring.
+stored centrally — hosted **PostgreSQL** in a real deployment, or a local
+SQLite file if `DATABASE_URL` is unset (`backend/print_records.py`, see
+"Hosted deployment" below) — and kept indefinitely. This was a
+deliberate, discussed tradeoff, not an oversight — see
+`print_records.py`'s docstring.
 
-### Setup
+### Local print agent
 
-`niimprint`'s own package metadata declares Python `<3.12`, which is
-overly conservative (nothing in its actual code is 3.12-incompatible —
-confirmed by installing and using it under 3.12 in this project). Install
-it separately from `requirements.txt`, since including it there would
-make a plain `pip install -r requirements.txt` fail outright on 3.12 and
-block installing everything else too:
+`backend/print_agent.py` is a **deliberately small, separate** program —
+it is not "the backend running locally," it's a different, much smaller
+process. It contains no Whisper, no transcription, no terminology
+normalization, no specimen mapping, no pathology-request database, no
+pathologist lookup UI, no doctor authentication — it imports exactly one
+module from this project, `label_printing.py` (pure label rendering plus
+the niimprint hardware adapter), and nothing else of the app. It knows
+three things about a job: a `print_job_id`, the `request_id` and
+`doctor_name` to put on the label, and the `qr_payload` URL to encode —
+never clinical content.
 
-```bash
-pip install --ignore-requires-python "niimprint @ git+https://github.com/AndBondStyle/niimprint.git"
+It polls, never gets polled (no inbound connections, nothing public-
+facing on the printing machine):
+
+```
+loop:
+    POST /print-jobs/claim {station_id}   (Authorization: Bearer <AGENT_TOKEN>)
+    nothing pending (204) -> sleep POLL_INTERVAL_SECONDS, loop again
+    a job (200)           -> render the label, print it via niimprint,
+                              report success/failure, loop again
 ```
 
-Connect the B21 via USB (recommended — appears to Windows as a plain
-serial/COM port, no special driver, no pairing/range issues) or Bluetooth.
-Configuration is all environment variables, same pattern as
-`WHISPER_MODEL`/`DEVICE`/`COMPUTE_TYPE`:
+**Run it** on the Windows PC physically connected to the B21:
 
-| Variable                  | Default | Notes                                    |
-|---------------------------|---------|-------------------------------------------|
-| `PRINTER_CONNECTION`      | `usb`   | `usb` or `bluetooth`                      |
-| `PRINTER_USB_PORT`        | `auto`  | or an explicit COM port                   |
-| `PRINTER_BT_ADDRESS`      | (unset) | required if `PRINTER_CONNECTION=bluetooth`|
-| `PRINTER_DENSITY`         | `3`     | 1–5, per niimprint                        |
-| `PRINTER_LABEL_WIDTH_MM`  | `50`    | B21 supports 20–53mm                      |
-| `PRINTER_LABEL_HEIGHT_MM` | `30`    |                                            |
+```bash
+pip install -r print_agent_requirements.txt
+pip install --ignore-requires-python "niimprint @ git+https://github.com/AndBondStyle/niimprint.git"
+python print_agent.py
+```
 
-If the printer isn't connected (or `niimprint` isn't installed), printing
-just fails gracefully: `/print-label` still saves the digital record and
-reports `print_status: "print_failed"` with the specific error — a
-printer problem never looks like the request itself failed, and the
-digital copy is never lost to a hardware hiccup.
+(`niimprint`'s own package metadata declares Python `<3.12`, which is
+overly conservative — nothing in its actual code is 3.12-incompatible,
+confirmed by installing and using it under 3.12 here; kept out of
+`print_agent_requirements.txt` for the same reason it's kept out of the
+main `requirements.txt` — it would make a plain `pip install -r
+...txt` fail outright on 3.12.) Left running in a terminal is enough for
+this prototype; if you want it to survive reboots, point Windows Task
+Scheduler at it — no service installer is built here.
+
+Configuration — all environment variables, same pattern as everything
+else in this project:
+
+| Variable                  | Default            | Notes                                      |
+|---------------------------|--------------------|---------------------------------------------|
+| `BACKEND_URL`              | `http://localhost:8000` | the hosted (or local) backend to poll |
+| `AGENT_TOKEN`              | (unset — **required**)  | must match the backend's `PRINT_AGENT_TOKEN` |
+| `STATION_ID`               | `POC_PRINTER_01`   | this station's identity (see "Printer/station identity" below) |
+| `POLL_INTERVAL_SECONDS`    | `5`                | how often to check for a new job when idle |
+| `PRINTER_CONNECTION`       | `usb`              | `usb` or `bluetooth`                       |
+| `PRINTER_USB_PORT`         | `auto`             | or an explicit COM port                    |
+| `PRINTER_BT_ADDRESS`       | (unset)            | required if `PRINTER_CONNECTION=bluetooth` |
+| `PRINTER_DENSITY`          | `3`                | 1–5, per niimprint                         |
+| `PRINTER_LABEL_WIDTH_MM`   | `50`               | B21 supports 20–53mm                       |
+| `PRINTER_LABEL_HEIGHT_MM`  | `30`               |                                             |
+
+If the printer isn't connected (or the agent itself isn't running at
+all), nothing is lost: the request is already saved, and the print job
+just sits as `"pending"` in the queue until an agent is available to
+claim it — restart the agent (or reconnect the printer and let the next
+poll pick the job back up) and it prints with no doctor action needed.
+A genuine print failure (reported via `POST /print-jobs/{id}/fail`)
+shows the doctor the specific error and a **Retry Print** button; retry
+reuses the exact same job/request — never a new Request ID.
+
+**Printer/station identity.** `STATION_ID` exists even though this
+prototype only has one printer, so a future multi-station rollout (a
+busier lab, more than one printing location) is a schema/config
+addition, not a redesign: `print_jobs.station_id` already records which
+station handled each job, and `PRINT_AGENT_TOKEN` would become one row
+per station in a small `print_stations` table instead of a single shared
+secret. Not built now — flagged so the one-station version doesn't
+quietly make a multi-station future harder.
+
+#### Manual hardware test plan
+
+The automated suite covers the queue's logic without real hardware; these
+confirm the actual end-to-end physical behavior once a B21 and an agent
+are available:
+
+1. **Doctor on Windows (Chrome/Edge)** → Done/Print → NIIMBOT prints.
+2. **Doctor on Android (Chrome)** → same.
+3. **Doctor on iPhone (Safari)** → same.
+4. **Doctor on Mac (Safari/Chrome)** → same.
+5. **Agent offline**: stop `print_agent.py`, submit a request (confirm
+   it's saved, `print_status` stays `"pending"`), restart the agent —
+   the label prints with no further doctor action.
+6. **Printer disconnected**: unplug the B21, submit (confirm `"failed"`
+   with a clear error and a **Retry Print** button), reconnect, press
+   **Retry Print** — the same Request ID prints.
+7. **Pathologist on a different device** scans the printed QR — the
+   correct centrally-stored request opens.
+8. **Pathologist manually types** the printed Request ID on a different
+   device — same request opens.
+
+Every one of these requires exactly **one** doctor action (press
+"Done" once) — printing itself is never gated on a second confirmation
+at the print station.
 
 ### Lab lookup page
 
-`frontend/lookup.html` is a **separate, unauthenticated** static page — a
-request-ID input (auto-focused, so a handheld barcode scanner acting as a
-keyboard-wedge device can scan directly into it and auto-submit on Enter)
-that calls `GET /print-lookup/{request_id}` and displays the doctor's
-name, HPCSA number, and confirmed transcript. No login is required — the
-request ID itself is the access key. That's an accepted tradeoff for this
-POC stage (same spirit as `main.py`'s CORS `allow_origins=["*"]` comment),
-not something to leave as-is before any real deployment.
+`frontend/lookup.html` is a **separate, unauthenticated** static page,
+reachable two ways:
 
-CORS is enabled wide-open (`*`) on the backend for POC convenience — lock it
-down to your real frontend origin before using this anywhere real.
+- **Scan the QR** — it encodes `?id={request_id}` (see above), so the
+  page reads that param on load and looks the request up automatically.
+  No typing, no "Find Request" click needed.
+- **Type/paste it manually** — a request-ID input (auto-focused, so a
+  2D-capable handheld scanner acting as a keyboard-wedge device can scan
+  directly into it and auto-submit on Enter too). `extractRequestId()`
+  accepts a bare ID, a pasted full lookup URL, or — for backward
+  compatibility with any label printed by an earlier version of this
+  feature — a legacy `{id, ...}` JSON payload.
+
+Either path calls the same `GET /print-lookup/{request_id}` and displays
+the doctor's name, HPCSA number, contact actions (see below), and the
+confirmed transcript. No login is required — the request ID itself is the
+access key. That's an accepted tradeoff for this POC stage, **and a
+materially bigger one once this is hosted**: reachable only on a trusted
+LAN before, reachable from anywhere on the internet after — see "Hosted
+deployment" below for what that actually changes and what it doesn't fix.
+
+### Contacting the requesting doctor
+
+The lab lookup page shows the requesting doctor's name, HPCSA number, and
+phone number, with three actions next to them: **Call**, **Message**, and
+**Copy number**. This is deliberately three thin OS hand-offs, not a
+custom calling/messaging system:
+
+- **Call** is a plain `<a href="tel:+27821234567">` link — the browser/OS
+  decides what happens (opens the phone app on Android/iOS; on Windows/
+  macOS, whatever's registered to handle `tel:`, or nothing if nothing is).
+- **Message** is the same idea with `sms:`, pre-filled with a body —
+  `Regarding pathology request PR261002-A7KM:` — that always names
+  whichever request is **currently displayed** (`renderDoctorContact()`
+  runs fresh on every lookup, so it can't carry over a previous lookup's
+  ID). No patient name, identifiers, history, diagnosis, or results are
+  ever included — just the reference line. The OS's own SMS composer
+  opens with this pre-filled; nothing is ever sent automatically, the
+  pathologist still reviews and sends it themselves. No WhatsApp or other
+  third-party scheme — just the standard one, per the request.
+- **Copy number** uses the Clipboard API (`navigator.clipboard.writeText`)
+  with a `document.execCommand("copy")` fallback for browsers/contexts
+  where that API is unavailable, and a clear status message either way
+  (`frontend/lookup.js`'s `copyNumberBtn` handler) — this is the one
+  guaranteed-to-work option on a Windows/macOS machine with no phone/SMS
+  app registered at all.
+
+`frontend/lookup.js`'s `toTelUri()` is the one helper responsible for
+turning however the doctor's number is stored/displayed (spaces, hyphens,
+whatever they typed at registration) into the digits-and-leading-`+`-only
+form `tel:`/`sms:` expect — it never invents or guesses a number. If a
+request has no phone number on file, the Call/Message/Copy actions don't
+render at all and the page shows "Contact number unavailable." instead of
+a broken link (`renderDoctorContact()` in the same file).
+
+**Never in the QR/barcode itself.** The doctor's phone number is stored
+server-side (`print_records.py`'s `doctor_phone` column — added via a
+safe migration, see "Database schema" in the API section below) and only
+ever reaches the lookup page via `GET /print-lookup/{request_id}`,
+specifically so a physical label someone finds or
+photographs doesn't expose a doctor's personal number — the request ID
+is still the only thing that's scannable, and it's also the only access
+control this lookup has, same as everything else on this page.
+
+CORS defaults to wide-open (`*`) for local/POC convenience; set
+`ALLOWED_ORIGINS` (comma-separated) to lock it down to your real frontend
+origin(s) before using this anywhere real — see "Hosted deployment" below.
 
 ## API
 
@@ -509,6 +753,7 @@ popup becomes checkable there too, exactly like any other confirmed test.
 ```json
 {
   "doctor_name": "Dr. Thato Manapi",
+  "doctor_phone": "+27821234567",
   "hpcsa_number": "808080",
   "raw_text": "...",
   "normalized_text": "...",
@@ -516,37 +761,225 @@ popup becomes checkable there too, exactly like any other confirmed test.
 }
 ```
 
+`doctor_phone` is stored (see `print_records.py`'s `doctor_phone` column)
+and returned by `/print-lookup` below — never encoded into the QR/barcode
+itself, see "Contacting the requesting doctor" above.
+
 Generates a request ID, renders the label image once, **saves the digital
 record (including that image) first** (so it's never lost to a printer
-failure), then sends the SAME image to the physical printer. Returns:
+failure), then queues a print job referencing the same request ID (see
+`backend/print_jobs.py` / "Local print agent" above) and returns
+**immediately** — it never waits on, or even attempts, physical printing
+itself:
 
 ```json
 {
   "request_id": "PR260929-7K4M",
-  "print_status": "printed",
+  "print_status": "pending",
+  "print_job_id": "a1b2c3d4e5f6...",
   "print_error": null,
   "label_image": "data:image/png;base64,..."
 }
 ```
 
-or, if the printer isn't reachable (`label_image` is still present — only
-the physical print failed, the digital copy and its barcode are fine):
+If the database itself can't be reached, this returns `503` instead —
+the request is explicitly **not** reported as saved, never a misleading
+success.
 
-```json
-{
-  "request_id": "PR260929-7K4M",
-  "print_status": "print_failed",
-  "print_error": "Could not reach the NIIMBOT printer (usb connection): ...",
-  "label_image": "data:image/png;base64,..."
-}
-```
+`GET /print-status/{request_id}` — polled by the doctor's PWA after
+`/print-label` while a local print agent claims and processes the job.
+Returns `{"print_status": "pending"|"printing"|"printed"|"failed",
+"print_error": ..., "attempt_count": ...}` — the live state of the
+request's most recent print job. `400`/`404` same as `/print-lookup`
+below.
+
+`POST /print-jobs/{request_id}/retry` — only valid when the latest job is
+`"failed"` (`409` otherwise); resets that **same** job back to pending —
+nothing was physically printed yet, so nothing to duplicate. Same
+Request ID, same job, continued.
+
+`POST /print-jobs/{request_id}/reprint` — an intentional "print another
+physical copy," valid any time the request exists; creates a **new**
+print-job row (same `request_id`, never a new Request ID) so the
+original job's history (was it ever actually printed, and when) stays
+intact rather than being overwritten.
+
+**Agent-only** (require `Authorization: Bearer <PRINT_AGENT_TOKEN>`;
+`401` without it — see "Local print agent" above):
+- `POST /print-jobs/claim` — body `{"station_id": "..."}`; `204` if
+  nothing's pending, else the minimal job payload (`print_job_id`,
+  `request_id`, `qr_payload`, `doctor_name`, `printer_id` — never
+  clinical content). Atomically claims the job (safe even if two agents
+  poll at once — see `print_jobs.claim_next_job`'s docstring), so no two
+  agents can ever print the same job.
+- `POST /print-jobs/{print_job_id}/complete` / `.../fail` — body
+  `{"station_id": "...", "error": "..."}` (fail only); `409` if
+  `station_id` doesn't match whoever actually claimed it.
 
 `GET /print-lookup/{request_id}` — returns the full saved record
-(`doctor_name`, `hpcsa_number`, `raw_text`, `normalized_text`,
-`structured`, `printed_at`, `print_status`, `print_error`, `label_image`
-— the identical image, not re-rendered), or `404` if the ID doesn't exist.
-See "Barcode label printing" above for the full picture (why this exists,
-how printing actually happens, and the lookup page that calls this).
+(`doctor_name`, `hpcsa_number`, `doctor_phone`, `raw_text`,
+`normalized_text`, `structured`, `created_at`, `printed_at`,
+`print_status`, `print_error`, `label_image` — the identical image, not
+re-rendered). `400` if `request_id` doesn't match the expected format
+(validated before the database is even queried), `404` if it's
+well-formed but no such request exists, `503` if the database itself is
+unreachable. `doctor_phone` is `null` for a record saved before this
+column existed, or an empty string if a request was genuinely saved
+without one — `frontend/lookup.js` treats both the same way (shows
+"Contact number unavailable.").
+
+`POST /specimen-requirements` — JSON body `{"tests_required": [...]}`,
+returns `{"specimen_requirements": [...]}` in the same shape
+`field_extraction.py` already computes. Exists because resolving an
+inline ambiguous test (e.g. "TB" → Tuberculosis) changes `tests_required`
+client-side, after the initial `/transcribe` response already computed
+`specimen_requirements` once — `app.js`'s `resolveAmbiguousItem()` calls
+this to recompute it from the now-current `tests_required`, reusing
+`specimen_mapping.py`'s one curated dictionary rather than duplicating it
+in JavaScript.
+
+#### Database schema
+
+`backend/print_records.py` uses **SQLAlchemy Core** (not the ORM — this
+project's style is hand-rolled, explicit SQL, and Core preserves that
+while adding connection pooling and one code path that works against
+both PostgreSQL and SQLite without dialect branching). `init_db()` —
+called every time the backend starts — creates the table if it's
+missing, then backfills any columns an already-existing database doesn't
+have yet (`_add_missing_columns()`). It never drops or rewrites existing
+rows, so a database from before a given column existed keeps working:
+old rows just come back with that column `null` (or, for `created_at`,
+backfilled from `printed_at` — the closest real timestamp old rows have).
+
+```
+print_records
+├── request_id          TEXT PRIMARY KEY
+├── doctor_name         TEXT NOT NULL
+├── hpcsa_number        TEXT NOT NULL
+├── doctor_phone        TEXT              -- nullable
+├── raw_text            TEXT NOT NULL
+├── normalized_text     TEXT NOT NULL
+├── structured          JSON NOT NULL     -- JSONB on PostgreSQL; includes
+│                                            specimen_requirements as a
+│                                            point-in-time snapshot (see
+│                                            "Specimens" endpoint above —
+│                                            never re-mapped on lookup)
+├── print_status        TEXT NOT NULL
+├── print_error         TEXT
+├── label_image_base64  TEXT NOT NULL
+├── created_at           TIMESTAMPTZ NOT NULL
+└── printed_at          TEXT NOT NULL
+```
+
+`backend/print_jobs.py` adds a second table in the same database (reuses
+`print_records`'s engine/metadata rather than a second connection pool),
+tracking physical print *attempts* separately from the pathology request
+itself — never duplicating the request, only referencing it:
+
+```
+print_jobs
+├── print_job_id        TEXT PRIMARY KEY   -- uuid4 hex, internal only
+├── request_id          TEXT NOT NULL REFERENCES print_records(request_id)
+├── status              TEXT NOT NULL      -- pending | printing | printed | failed
+├── station_id          TEXT               -- which agent claimed it
+├── created_at          TIMESTAMPTZ NOT NULL
+├── claimed_at          TIMESTAMPTZ
+├── printed_at          TIMESTAMPTZ
+├── attempt_count       INTEGER NOT NULL DEFAULT 0
+└── last_error          TEXT
+```
+A request can have more than one `print_jobs` row over its lifetime (a
+retry reuses the same row; an intentional reprint adds a new one — see
+"Finalizing a request" above) — `print_records.print_status`/
+`print_error` are kept in sync with the *latest* job as a convenience so
+`GET /print-lookup/{id}` (the pathologist side) never needs to know
+`print_jobs` exists at all.
+
+See "Barcode label printing" and "Local print agent" above, and "Hosted
+deployment" below, for the full picture (why this exists, how printing
+actually happens, and where it actually runs).
+
+## Hosted deployment
+
+The doctor and the pathologist don't necessarily share a device, a
+network, or a country — so the shared request store (above) and the
+frontend/backend address need to work over the public internet, not just
+`localhost`/a LAN. What changes for a hosted deployment, and what
+deliberately doesn't:
+
+**Backend** — any host that runs a long-lived Python process works (this
+was built against [Render](https://render.com) as the reference target,
+no Render-specific code anywhere): build `pip install -r
+requirements.txt`, start `uvicorn main:app --host 0.0.0.0 --port $PORT`.
+Configure via environment variables (see `backend/.env.example` for the
+full list with examples):
+
+| Variable            | Purpose                                                              |
+|----------------------|-----------------------------------------------------------------------|
+| `DATABASE_URL`       | PostgreSQL connection string. Unset → falls back to the local SQLite file, so local dev/tests need no Postgres at all. |
+| `ALLOWED_ORIGINS`    | Comma-separated frontend origin(s) for CORS. Unset → `*` (development-only — see `main.py`'s comment). |
+| `FRONTEND_URL`       | Where `frontend/lookup.html` is actually served — used to build the QR's lookup URL. |
+| `PRINT_AGENT_TOKEN`  | Shared secret the local print agent authenticates with. Unset → every agent-facing endpoint rejects everything (fails closed, never silently open). |
+| `STALE_JOB_TIMEOUT_SECONDS` | Default `120` — how long a job can sit "printing" before it's considered an abandoned/crashed claim and re-offered. |
+| `MAX_PRINT_ATTEMPTS` | Default `5` — a job reclaimed this many times without succeeding is auto-marked `"failed"` instead of retried forever. |
+
+**Frontend** — still just static files, no build step; any static host
+works (Render Static Site, GitHub Pages, Netlify, ...). Point it at the
+hosted backend by editing the one line in `frontend/config.js` (see
+"Frontend — serve it" above).
+
+**Database migration** — `backend/data/print_records.db` (the project's
+original local SQLite store) is never deleted or overwritten by any of
+this. To move its rows into a new PostgreSQL instance:
+
+```bash
+DATABASE_URL="postgresql+psycopg://user:pass@host/db" python backend/migrate_sqlite_to_postgres.py
+```
+
+Safe to re-run (existing `request_id`s are skipped, not duplicated), and
+the original file is left on disk afterward as a backup.
+
+**NIIMBOT printing stays local, by design — and still works when the
+backend is hosted.** A hosted backend has no USB/Bluetooth path to a
+printer sitting on a doctor's desk, so it doesn't try: `/print-label`
+only ever queues a print job (`backend/print_jobs.py`); a separate
+standalone `print_agent.py` (see "Local print agent" above), running on
+whichever machine the B21 is actually plugged into, polls that queue over
+plain HTTPS and does the real printing. Central request storage and local
+physical printing are two different concerns talking to the same hosted
+backend, not one process trying to do both — which is exactly what makes
+a doctor on Windows, macOS, Android, *or* iOS able to trigger printing
+with one click regardless of where any of this is hosted.
+
+**Security — honestly, not just checked off.** This is a synthetic-data
+university prototype; none of the below makes it suitable for real
+patient data on its own:
+
+- `GET /print-lookup/{request_id}` is still **unauthenticated** — same as
+  before, but now reachable from anywhere on the internet instead of just
+  a trusted LAN. Anyone who has or guesses a request ID can read that
+  confirmed request from any device. This is the single biggest thing
+  worth hardening before any real deployment; not addressed here since it
+  needs its own discussion (not a drop-in addition).
+- PostgreSQL credentials live only in the backend's environment
+  (`DATABASE_URL`) — never in any frontend file. The frontend has no
+  database code at all; it only ever talks to FastAPI.
+- No secrets are committed to git — `backend/.env.example` documents the
+  shape with no real values, and `.gitignore` excludes a real `.env`.
+- Every query goes through SQLAlchemy Core's parameterized statements —
+  no raw string interpolation, on either backend.
+- `GET /print-lookup/{request_id}` validates the ID's format (`400` if
+  malformed) before touching the database, and a database connection
+  failure returns a generic `503` — never a raw stack trace or database
+  error to the client.
+- The print-job queue's agent-facing endpoints (`/print-jobs/claim`,
+  `.../complete`, `.../fail`) require `Authorization: Bearer
+  <PRINT_AGENT_TOKEN>`, checked with a constant-time comparison, and
+  **fail closed** — an unconfigured token rejects every agent request
+  rather than silently allowing them. One shared token for one station
+  is a prototype-appropriate simplification, not a final-state auth
+  model — see "Local print agent" above for the natural per-station
+  upgrade path.
 
 ## Out of scope (deliberately)
 
@@ -566,8 +999,10 @@ how printing actually happens, and the lookup page that calls this).
   reviewed dataset.
 - Doctor profiles, history, and confirmed tests live in the browser's
   localStorage only — the server stores nothing about them. The one
-  exception is finalized (printed) requests, which are stored server-side
-  specifically so lab staff can look them up from the barcode — see
-  "Barcode label printing" above for why, and what that changes.
+  exception is finalized (printed) requests, which are stored centrally
+  (PostgreSQL in a hosted deployment, local SQLite otherwise) specifically
+  so lab staff can look them up from the barcode — see "Barcode label
+  printing" and "Hosted deployment" above for why, and what that changes.
 - Authentication on the lab lookup page — the request ID is the only
-  access control for now (see "Barcode label printing" above).
+  access control for now (see "Hosted deployment" above for why this
+  matters more once the backend is reachable over the internet).

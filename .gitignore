@@ -3,6 +3,10 @@ __pycache__/
 venv/
 .venv/
 
+# Real secrets (DATABASE_URL, etc.) — see backend/.env.example for the
+# documented shape with no real values.
+.env
+
 # Reference terminology data (LOINC / SNOMED CT / NHLS) — large, licensed,
 # and not meant to live in git. Load it from disk at runtime instead.
 Medical_Terminologies/

@@ -12,6 +12,13 @@ Fuzzy/terminology matching must never touch identifiers or names (see
 terminology_normalize.py's and clinical_terminology.py's docstrings, and
 point 16 of the originating request).
 
+`specimen_requirements` is DERIVED, additive metadata computed once
+`tests_required` is normalized (specimen_mapping.py) — it groups the
+CONFIRMED tests by tube/specimen type for display as its own "Specimens /
+Tubes Required" section. It reads only `tests_required` and writes only
+this one new key; it's not a transcript-normalization stage, and it never
+feeds back into `tests_required` or any other field.
+
 Anything not claimed by a recognized field (a run of text with no label
 before it, or trailing text after the last field's sentence) is collected
 into `unparsed_text` rather than being silently dropped or attached to the
@@ -23,6 +30,7 @@ disappear into an unrelated field.
 import re
 
 import clinical_terminology
+import specimen_mapping
 from datetime_normalize import normalize_date, normalize_time
 from terminology_normalize import normalize_tests_required
 
@@ -214,6 +222,16 @@ def extract_fields(transcript: str) -> dict:
     if "tests_required_raw" in result:
         result["tests_required"] = normalize_tests_required(
             result["tests_required_raw"], context=result
+        )
+        # Derived, additive metadata ONLY — reads the just-computed
+        # tests_required and nothing else, writes a new key and nothing
+        # else. See specimen_mapping.py's docstring for why this can't
+        # read backend/data/nhls_tests.json's specimen_type field, and why
+        # this must never be confused with a transcript-normalization
+        # stage (it doesn't touch clinical_history/provisional_diagnosis/
+        # medication/identifiers/dates, and never feeds back into them).
+        result["specimen_requirements"] = specimen_mapping.map_tests_to_specimens(
+            result["tests_required"]
         )
 
     result["unparsed_text"] = unparsed

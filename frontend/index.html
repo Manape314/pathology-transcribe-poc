@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Pathology Dictation POC</title>
+  <title>Smart Pathology Request</title>
 
   <!-- PWA hooks: theme colour for the browser chrome + the manifest that makes
        the page installable to a phone home screen. -->
@@ -16,7 +16,7 @@
 <body>
   <!-- Login screen — shown first. Gates everything below. -->
   <main id="loginScreen" class="app screen">
-    <h1>Pathology Dictation</h1>
+    <h1>Smart Pathology Request</h1>
     <p class="subtitle">Doctor sign in</p>
 
     <form id="loginForm" class="auth-form">
@@ -91,13 +91,38 @@
     <p id="status" class="status">Ready.</p>
 
     <!-- Where the normalized (clinician-facing) transcript is shown, with
-         a toggle to view the untouched raw Whisper output instead. -->
+         a toggle to view the untouched raw Whisper output instead. The
+         Tubes Required block below the transcript text is
+         DERIVED, display-only metadata (backend/specimen_mapping.py) —
+         it lives inside this same card per request, but is still never
+         part of the transcript text itself, never edits tests_required,
+         and is rendered by its own function (renderSpecimenGroups). -->
     <section class="transcript" aria-live="polite">
       <div class="transcript-header">
         <h2>Transcript</h2>
-        <button id="toggleRawBtn" class="nav-btn" type="button">View raw transcript</button>
+        <div class="transcript-header-actions">
+          <button id="toggleRawBtn" class="nav-btn" type="button">View raw transcript</button>
+          <button id="editTranscriptBtn" class="nav-btn" type="button">Edit transcript</button>
+        </div>
       </div>
       <p id="transcript" class="transcript-text">—</p>
+
+      <!-- Edit mode: free-text correction of the normalized transcript
+           (e.g. fixing a Whisper spelling mistake) before confirming.
+           Hidden unless editTranscriptBtn is pressed — see app.js's
+           enterEditMode()/saveTranscriptEdit()/cancelTranscriptEdit().
+           This only changes the displayed/submitted TEXT, never
+           re-extracts tests_required or other structured fields. -->
+      <textarea id="transcriptEditArea" class="transcript-edit-area hidden"></textarea>
+      <div id="transcriptEditActions" class="matches-actions hidden">
+        <button id="saveTranscriptEditBtn" class="primary-btn" type="button">Save edits</button>
+        <button id="cancelTranscriptEditBtn" class="nav-btn" type="button">Cancel</button>
+      </div>
+
+      <div id="specimenSection" class="specimen-section hidden">
+        <h3 class="specimen-section-title">Tubes Required</h3>
+        <div id="specimenGroups" class="specimen-groups"></div>
+      </div>
     </section>
 
     <!-- Tests required, extracted from the transcript and normalized to
@@ -113,17 +138,21 @@
       </div>
     </section>
 
-    <!-- Final step: doctor is done reviewing, print the barcode label and
-         save a server-side digital copy scannable by lab staff. Shown
-         automatically once a transcription exists. -->
+    <!-- Final step: doctor is done reviewing. One click here saves the
+         request centrally and queues a print job — the actual physical
+         printing happens asynchronously, on a separate local print agent
+         (see backend/print_agent.py), so this never blocks on hardware.
+         Shown automatically once a transcription exists. -->
     <section id="printSection" class="matches hidden" aria-live="polite">
       <h2>Finalize request</h2>
       <p class="match-hint">
-        Prints a barcode label with your name and a unique request ID, and
-        keeps a digital copy lab staff can look up by scanning it.
+        Saves the request and queues a barcode label (your name + a
+        unique request ID) for printing, and keeps a digital copy lab
+        staff can look up by scanning it.
       </p>
       <div class="matches-actions">
         <button id="doneBtn" class="primary-btn" type="button">Done — Print label</button>
+        <button id="retryPrintBtn" class="nav-btn hidden" type="button">Retry Print</button>
       </div>
       <p id="printStatus" class="empty-msg"></p>
       <img id="printLabelImage" class="label-image hidden" alt="Printed barcode label" />
@@ -199,7 +228,9 @@
     <p id="historyEmpty" class="empty-msg hidden">No transcriptions yet.</p>
   </main>
 
+  <script src="config.js"></script>
   <script src="auth.js"></script>
+  <script src="specimen-render.js"></script>
   <script src="app.js"></script>
   <script>
     // Register the service worker. This is what makes the app installable and
