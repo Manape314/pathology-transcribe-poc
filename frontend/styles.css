@@ -661,6 +661,32 @@ h1 {
   flex-wrap: wrap;
 }
 
+/* ---- In-page QR scanner (lab lookup page) — the hidden-by-default
+   camera preview shown while startScan() is active. The decoding
+   canvas itself stays off-screen (toggled via the existing .hidden
+   utility class, not this rule). ---- */
+
+/* :not(.hidden), not a plain .scanner-area rule — this sits after
+   .hidden in the stylesheet, and with equal specificity the later rule
+   would otherwise win and show an empty camera box before "Scan QR" is
+   even pressed. */
+.scanner-area:not(.hidden) {
+  margin-top: 1rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.scanner-video {
+  display: block;
+  width: 100%;
+  max-width: 360px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #000;
+}
+
 .contact-action {
   display: inline-flex;
   align-items: center;

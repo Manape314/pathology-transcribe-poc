@@ -5,6 +5,11 @@
 const lookupForm = document.getElementById("lookupForm");
 const requestIdInput = document.getElementById("requestIdInput");
 const lookupStatus = document.getElementById("lookupStatus");
+const startScanBtn = document.getElementById("startScanBtn");
+const cancelScanBtn = document.getElementById("cancelScanBtn");
+const scannerArea = document.getElementById("scannerArea");
+const scannerVideo = document.getElementById("scannerVideo");
+const scannerCanvas = document.getElementById("scannerCanvas");
 const resultSection = document.getElementById("resultSection");
 const resultMeta = document.getElementById("resultMeta");
 const resultText = document.getElementById("resultText");
@@ -206,6 +211,74 @@ lookupForm.addEventListener("submit", (e) => {
   e.preventDefault();
   runLookup(extractRequestId(requestIdInput.value));
 });
+
+// ---------------------------------------------------------------------------
+// In-page QR scanning (additional to the native-camera-app path below,
+// which already works today since the QR encodes a full lookup URL).
+// Useful on a desktop/webcam, or for anyone who'd rather not leave this
+// page for their phone's own camera app. Decoding is done entirely
+// client-side via jsQR (loaded in lookup.html) — nothing is sent
+// anywhere until a code is actually found, at which point this reuses
+// the exact same runLookup()/extractRequestId() path as manual entry.
+// ---------------------------------------------------------------------------
+
+let scanStream = null;
+let scanAnimationFrame = null;
+
+function stopScan() {
+  if (scanAnimationFrame !== null) {
+    cancelAnimationFrame(scanAnimationFrame);
+    scanAnimationFrame = null;
+  }
+  if (scanStream) {
+    scanStream.getTracks().forEach((track) => track.stop());
+    scanStream = null;
+  }
+  scannerArea.classList.add("hidden");
+}
+
+function tickScan() {
+  if (!scanStream) return; // stopScan() ran while a frame was already queued
+
+  const canvasContext = scannerCanvas.getContext("2d");
+  if (scannerVideo.readyState === scannerVideo.HAVE_ENOUGH_DATA) {
+    scannerCanvas.width = scannerVideo.videoWidth;
+    scannerCanvas.height = scannerVideo.videoHeight;
+    canvasContext.drawImage(scannerVideo, 0, 0, scannerCanvas.width, scannerCanvas.height);
+
+    const frame = canvasContext.getImageData(0, 0, scannerCanvas.width, scannerCanvas.height);
+    const decoded = jsQR(frame.data, frame.width, frame.height);
+    if (decoded && decoded.data) {
+      stopScan(); // release the camera immediately, before even looking anything up
+      runLookup(extractRequestId(decoded.data));
+      return;
+    }
+  }
+
+  scanAnimationFrame = requestAnimationFrame(tickScan);
+}
+
+async function startScan() {
+  lookupStatus.textContent = "";
+  try {
+    // Same secure-context requirement as microphone access (app.js's
+    // startRecording()): REJECTS on plain http:// that isn't localhost.
+    scanStream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: "environment" },
+    });
+    scannerVideo.srcObject = scanStream;
+    scannerArea.classList.remove("hidden");
+    await scannerVideo.play();
+    scanAnimationFrame = requestAnimationFrame(tickScan);
+  } catch (err) {
+    console.error(err);
+    lookupStatus.textContent = "Camera error: " + err.message;
+    stopScan();
+  }
+}
+
+startScanBtn.addEventListener("click", startScan);
+cancelScanBtn.addEventListener("click", stopScan);
 
 // Scanning the printed QR opens this page at ?id=<request_id> (see
 // backend/label_printing.py) — look it up immediately so scan-and-go

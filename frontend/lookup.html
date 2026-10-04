@@ -32,10 +32,26 @@
         placeholder="PR260929-7K4M"
         required
       />
-      <button class="primary-btn" type="submit">Look up</button>
+      <div class="matches-actions">
+        <button class="primary-btn" type="submit">Look up</button>
+        <button id="startScanBtn" class="nav-btn" type="button">Scan QR</button>
+      </div>
     </form>
 
     <p id="lookupStatus" class="empty-msg"></p>
+
+    <!-- Hidden unless "Scan QR" is pressed — an ADDITIONAL way to scan,
+         for a desktop/webcam or anyone who'd rather not leave this page
+         for their phone's own camera app (which already works today:
+         the QR encodes a full lookup URL, so a native camera app
+         recognizes it directly). Decoding happens in-browser via jsQR;
+         see app.js's startRecording() for the same getUserMedia +
+         secure-context pattern this mirrors. -->
+    <div id="scannerArea" class="scanner-area hidden">
+      <video id="scannerVideo" class="scanner-video" playsinline autoplay muted></video>
+      <canvas id="scannerCanvas" class="hidden"></canvas>
+      <button id="cancelScanBtn" class="nav-btn" type="button">Cancel</button>
+    </div>
 
     <!-- Requesting doctor's contact details + actions. The phone number
          is never in the QR/barcode itself (see backend/label_printing.py)
@@ -108,6 +124,11 @@
 
   <script src="config.js"></script>
   <script src="specimen-render.js"></script>
+  <!-- The frontend's first external script dependency — a small (~10KB
+       minified), dependency-free QR decoder for the in-page "Scan QR"
+       button below. Pinned to an exact version like every other
+       CDN-loaded library convention in this project. -->
+  <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
   <script src="lookup.js"></script>
 </body>
 </html>

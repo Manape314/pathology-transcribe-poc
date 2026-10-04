@@ -606,19 +606,34 @@ at the print station.
 ### Lab lookup page
 
 `frontend/lookup.html` is a **separate, unauthenticated** static page,
-reachable two ways:
+reachable three ways:
 
-- **Scan the QR** — it encodes `?id={request_id}` (see above), so the
-  page reads that param on load and looks the request up automatically.
-  No typing, no "Find Request" click needed.
+- **Scan the QR with the device's own camera app** — it encodes
+  `?id={request_id}` (see above), so a phone's native camera recognizes
+  it and offers to open the link; the page reads that param on load and
+  looks the request up automatically. No typing, no "Find Request"
+  click needed.
+- **Scan the QR in-page** — a **Scan QR** button opens the camera right
+  on this page and decodes the code in-browser via
+  [jsQR](https://github.com/cozmo/jsQR) (MIT, loaded from a pinned CDN
+  `<script>` — the frontend's first external script dependency; nothing
+  is sent anywhere until a code is actually found). Useful on a
+  desktop/laptop with a webcam, or for anyone who'd rather not leave the
+  page for their phone's own camera app. Same secure-context requirement
+  as the microphone (`app.js`'s `startRecording()`): camera access
+  REJECTS on plain `http://` that isn't `localhost`. The camera stream
+  is stopped immediately on a successful decode or on **Cancel** — it's
+  never left running in the background.
 - **Type/paste it manually** — a request-ID input (auto-focused, so a
   2D-capable handheld scanner acting as a keyboard-wedge device can scan
   directly into it and auto-submit on Enter too). `extractRequestId()`
   accepts a bare ID, a pasted full lookup URL, or — for backward
   compatibility with any label printed by an earlier version of this
-  feature — a legacy `{id, ...}` JSON payload.
+  feature — a legacy `{id, ...}` JSON payload. All three paths funnel
+  into the same `runLookup()` function, so there's one lookup code path,
+  not three that could drift apart.
 
-Either path calls the same `GET /print-lookup/{request_id}` and displays
+Every path calls the same `GET /print-lookup/{request_id}` and displays
 the doctor's name, HPCSA number, contact actions (see below), and the
 confirmed transcript. No login is required — the request ID itself is the
 access key. That's an accepted tradeoff for this POC stage, **and a
