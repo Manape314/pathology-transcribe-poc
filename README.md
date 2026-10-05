@@ -259,10 +259,12 @@ SNOMED CT is deliberately not wired up yet (see "Out of scope").
   expanded in place (`"Shortness of Breath (SOB)"`) and ambiguous ones
   marked (`"DM [ambiguous — please confirm]"`) — `resolved_terms` carries
   the full per-item detail for the frontend's disambiguation UI.
-- **Everything else** (patient/doctor names, patient ID, HPCSA number,
-  ward, hospital, specimen type/site, priority) is **pure raw
-  passthrough** — terminology/fuzzy matching never touches identifiers or
-  names.
+- **Everything else** (patient/doctor names, patient hospital number,
+  HPCSA number, ward, hospital, specimen type/site, reason for request,
+  priority) is **pure raw passthrough** — terminology/fuzzy matching
+  never touches identifiers or names. `patient_id` recognizes both
+  "Patient ID," and the dictation proforma's "Patient hospital number,"
+  phrasing — same field, same storage key, either wording works.
 - Text not claimed by any recognized field (e.g. a corrupted trailing
   sentence from a speech-recognition glitch) is collected into
   `unparsed_text` for clinician review, rather than being dropped or
@@ -341,6 +343,48 @@ deliberately excluded rather than guessed) shows up in its own
 "Unmapped — verify specimen requirements" group — never silently dropped,
 never force-assigned a colour. It's a starting set, extensible the same
 way the abbreviation dictionaries are.
+
+### Single dictation, six-block review
+
+The doctor dictates the whole request **once** — one `Record` press, one
+`/transcribe` call, one Whisper pass. `extract_fields()` already parses
+that single transcript into every field above by anchoring on the spoken
+labels; there is no per-field or per-block recording step anywhere in the
+code. What the PWA shows afterward is purely a different *rendering* of
+that one result: six labeled review blocks (Specimen, Hospital, Patient,
+Clinical, Tests required + Tubes required, Priority) instead of one
+flowing paragraph, so the doctor can scan what was captured and fix only
+what needs fixing — never repeat the whole dictation for one missing
+field (`frontend/app.js`'s `renderAllBlocks()`/`BLOCK_DEFS`).
+
+A fixed required-field list (specimen type/site, reason for request,
+hospital, ward, patient hospital number, clinical history, provisional
+diagnosis, a non-empty tests-required list, priority, and a confirmed —
+not merely dictated — collection date/time) is checked after every
+transcription, edit, or resolve action (`getIncompleteFields()`/
+`refreshValidation()`). While anything's missing or still ambiguous, a
+"Request incomplete" banner names exactly what, and the final "Done —
+Print label" button stays disabled. The least-disruptive fix for a
+missing or wrong field is "Edit transcript" — free-text correction that
+re-parses through `POST /extract-fields`, never a re-recording.
+
+A collection time dictated without am/pm is never guessed
+(`datetime_normalize.normalize_time()` already refuses to — see above);
+the block shows two quick-pick buttons ("10:30 AM" / "10:30 PM") instead,
+resolved via `POST /normalize-time`. Block 5 (Tests required / Tubes
+required) also carries a required confirmation checkbox — *"I confirm
+that I have checked the specimen/container requirements and used the
+correct collection tubes/containers"* — that's part of the same Done
+gate, and is automatically re-unchecked whenever the tube grouping
+changes underneath it (e.g. resolving an ambiguous test), so a stale
+confirmation can never silently survive a change to what it was
+confirming.
+
+None of this touches the existing printing/queue architecture: "Done"
+still calls the same `POST /print-label`, the same print-job queue, the
+same local print agent and NIIMBOT label, and the same Request-ID/QR/
+lookup/SMS behaviour on the receiving end — this is entirely a review/
+validation layer in front of that unchanged submission step.
 
 ### Running the tests
 
@@ -852,6 +896,35 @@ client-side, after the initial `/transcribe` response already computed
 this to recompute it from the now-current `tests_required`, reusing
 `specimen_mapping.py`'s one curated dictionary rather than duplicating it
 in JavaScript.
+
+`POST /normalize-time` — JSON body `{"raw": "10:30 AM"}`, returns
+`{"value": "10:30", "status": "confirmed"}` (or `{"value": null,
+"status": "ambiguous"}` if `raw` still has no explicit am/pm). A thin
+wrapper around `datetime_normalize.normalize_time()` — zero new
+normalization logic. Backs the six-block review UI's AM/PM quick-pick:
+when a dictated time is missing am/pm, the frontend offers two buttons
+("10:30 AM" / "10:30 PM") instead of guessing; picking one calls this
+endpoint with the chosen suffix appended, so "what counts as a valid
+time" has exactly one definition, never duplicated in JavaScript.
+
+`POST /extract-fields` — JSON body `{"text": "..."}`, returns
+`{"structured": {...}, "normalized_text": "..."}` — re-runs the exact
+same `field_extraction.extract_fields()` + `build_normalized_text()`
+`/transcribe` already uses, just on hand-typed text instead of a fresh
+Whisper transcription. Backs "Save edits" in the transcript edit box: the
+six review blocks and the completeness check both read `structured`
+directly, so without this, a manual correction to the free-text box
+would silently desync them until the next real dictation.
+
+`POST /rebuild-transcript` — JSON body `{"structured": {...}}`, returns
+`{"normalized_text": "..."}` — a thin wrapper around
+`field_extraction.build_normalized_text()`. Called after an action that
+mutates one field of `structured` directly (resolving an ambiguous
+abbreviation inline, or the AM/PM quick-pick above) rather than through
+the free-text edit box, so the flat `normalized_text` string — what's
+actually saved to history and printed on the label — is regenerated from
+the same reconstruction logic every other path already uses, instead of
+being hand-patched in JavaScript.
 
 #### Database schema
 

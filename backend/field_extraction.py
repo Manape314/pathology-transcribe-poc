@@ -7,7 +7,8 @@ ID, Y. ...") into named fields, by anchoring on known label phrases.
 and `medication` go through curated clinical/medication abbreviation
 scanning (clinical_terminology.py); date/time fields go through
 datetime_normalize.py. Every other field (patient name, doctor name, IDs,
-ward, hospital, specimen type/site, priority) is pure raw passthrough.
+ward, hospital, specimen type/site, reason for request, priority) is pure
+raw passthrough.
 Fuzzy/terminology matching must never touch identifiers or names (see
 terminology_normalize.py's and clinical_terminology.py's docstrings, and
 point 16 of the originating request).
@@ -39,16 +40,25 @@ from terminology_normalize import normalize_tests_required
 # is a real label instance rather than incidental text; see _is_real_label).
 _LABEL_DEFS = [
     ("patient_name", r"patient\s+name"),
-    ("patient_id", r"patient\s+id"),
+    # Accepts both phrasings — "Patient ID" (original) and "Patient
+    # hospital number" (the dictation proforma's canonical wording) —
+    # under the SAME storage key, so nothing downstream needs to know
+    # which one was actually spoken.
+    ("patient_id", r"patient\s+id|patient\s+hospital\s+number"),
     ("date_of_birth", r"date\s+of\s+birth"),
     ("ward", r"medical\s+ward|\bward\b"),
-    ("hospital", r"\bhospital\b"),
+    # Negative lookbehind excludes the word "hospital" when it's part of
+    # "patient hospital number" (added above as a patient_id alias) —
+    # without this, that phrase's own "hospital" would get mistaken for
+    # a second, bogus "Hospital:" label mid-sentence.
+    ("hospital", r"(?<!patient\s)hospital\b"),
     ("date_time_collected", r"date,?\s+time\s+collected|date\s+and\s+time\s+collected"),
     ("date_requested", r"date\s+requested"),
     ("time_requested", r"time\s+requested"),
     ("priority", r"\bpriority\b"),
     ("specimen_type", r"specimen\s+type"),
     ("specimen_site", r"specimen\s+site"),
+    ("reason_for_request", r"reason\s+for\s+request"),
     ("clinical_history", r"clinical\s+history"),
     ("provisional_diagnosis", r"provisional\s+diagnosis"),
     ("tests_required", r"tests?\s+(?:required|requested|needed)"),
@@ -248,7 +258,7 @@ def extract_fields(transcript: str) -> dict:
 
 _DISPLAY_FIELDS = [
     ("patient_name", "Patient name"),
-    ("patient_id", "Patient ID"),
+    ("patient_id", "Patient hospital number"),
     ("date_of_birth", "Date of birth"),
     ("ward", "Medical ward"),
     ("hospital", "Hospital"),
@@ -257,6 +267,7 @@ _DISPLAY_FIELDS = [
     ("priority", "Priority"),
     ("specimen_type", "Specimen type"),
     ("specimen_site", "Specimen site"),
+    ("reason_for_request", "Reason for request"),
     ("date_collected", "Date collected"),
     ("time_collected", "Time collected"),
     ("clinical_history", "Clinical history"),

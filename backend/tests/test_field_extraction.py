@@ -237,3 +237,38 @@ def test_empty_transcript_returns_empty_structure():
 def test_transcript_with_no_recognized_labels_is_all_unparsed():
     result = extract_fields("just some random unrelated speech")
     assert result["unparsed_text"] == ["just some random unrelated speech"]
+
+
+def test_reason_for_request_field_extracted():
+    result = extract_fields("Reason for request, suspected infection. Priority, routine.")
+    assert result["reason_for_request"]["value"] == "suspected infection"
+    assert "Reason for request: suspected infection" in build_normalized_text(result)
+
+
+def test_patient_hospital_number_phrasing_recognized_as_patient_id():
+    # The dictation proforma's canonical wording — not the original
+    # "Patient ID" phrasing — must resolve to the SAME field.
+    result = extract_fields("Patient hospital number, H123456. Priority, routine.")
+    assert result["patient_id"]["value"] == "H123456"
+    assert "Patient hospital number: H123456" in build_normalized_text(result)
+
+    # The original phrasing still works too — this is an added alias,
+    # not a replacement.
+    old_phrasing = extract_fields("Patient ID, H123456. Priority, routine.")
+    assert old_phrasing["patient_id"]["value"] == "H123456"
+
+
+def test_patient_hospital_number_does_not_collide_with_hospital_field():
+    # Regression lock: "patient hospital number" contains the word
+    # "hospital" — before the negative lookbehind guard, the hospital
+    # field's own bare `\bhospital\b` pattern would mistake that word for
+    # a second, bogus "Hospital:" label mid-phrase, corrupting both
+    # fields. Both must extract correctly, independently, in the same
+    # transcript.
+    transcript = (
+        "Hospital, Ubuntu Academic Hospital. Patient hospital number, "
+        "H123456. Priority, routine."
+    )
+    result = extract_fields(transcript)
+    assert result["hospital"]["value"] == "Ubuntu Academic Hospital"
+    assert result["patient_id"]["value"] == "H123456"

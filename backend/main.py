@@ -48,6 +48,7 @@ from faster_whisper import WhisperModel
 from pydantic import BaseModel
 from sqlalchemy.exc import IntegrityError, OperationalError
 
+import datetime_normalize
 import field_extraction
 import label_printing
 import matching
@@ -347,6 +348,53 @@ def specimen_requirements(body: SpecimenRequirementsRequest):
     than duplicating that dictionary in JavaScript where it could drift
     out of sync with the Python one."""
     return {"specimen_requirements": specimen_mapping.map_tests_to_specimens(body.tests_required)}
+
+
+class NormalizeTimeRequest(BaseModel):
+    raw: str
+
+
+@app.post("/normalize-time")
+def normalize_time_endpoint(body: NormalizeTimeRequest):
+    """Thin wrapper around datetime_normalize.normalize_time() — called by
+    the frontend's AM/PM quick-pick (app.js) when the doctor resolves a
+    time that was dictated without am/pm (e.g. "10:30" -> "10:30 AM").
+    Keeps normalize_time() as the one source of truth for what counts as
+    a valid time, rather than duplicating that parsing in JavaScript."""
+    value, status = datetime_normalize.normalize_time(body.raw)
+    return {"value": value, "status": status}
+
+
+class ExtractFieldsRequest(BaseModel):
+    text: str
+
+
+@app.post("/extract-fields")
+def extract_fields_endpoint(body: ExtractFieldsRequest):
+    """Thin wrapper around field_extraction.extract_fields() +
+    build_normalized_text() — re-parses doctor-edited text (app.js's
+    saveTranscriptEdit()) so the structured six-block view stays in sync
+    with whatever the doctor just typed, rather than going stale the
+    moment free-text editing touches a field the blocks read directly.
+    No audio/Whisper involved — pure text in, structured fields out,
+    same extraction this already runs once inside /transcribe."""
+    structured = field_extraction.extract_fields(body.text)
+    normalized_text = field_extraction.build_normalized_text(structured)
+    return {"structured": structured, "normalized_text": normalized_text or body.text}
+
+
+class RebuildTranscriptRequest(BaseModel):
+    structured: dict = {}
+
+
+@app.post("/rebuild-transcript")
+def rebuild_transcript_endpoint(body: RebuildTranscriptRequest):
+    """Thin wrapper around field_extraction.build_normalized_text() —
+    called after the AM/PM quick-pick updates a single field in
+    currentStructured client-side, so the flat normalized_text string
+    (what's actually saved/printed/looked-up) is regenerated from the
+    SAME reconstruction logic rather than hand-patched in JavaScript."""
+    return {"normalized_text": field_extraction.build_normalized_text(body.structured)}
 
 
 @app.post("/transcribe")

@@ -90,13 +90,14 @@
     <!-- Short status line: idle / recording / uploading / done / error. -->
     <p id="status" class="status">Ready.</p>
 
-    <!-- Where the normalized (clinician-facing) transcript is shown, with
-         a toggle to view the untouched raw Whisper output instead. The
-         Tubes Required block below the transcript text is
-         DERIVED, display-only metadata (backend/specimen_mapping.py) —
-         it lives inside this same card per request, but is still never
-         part of the transcript text itself, never edits tests_required,
-         and is rendered by its own function (renderSpecimenGroups). -->
+    <!-- The doctor dictates ONE continuous request (one Record press, one
+         /transcribe call) — field_extraction.py already parses that
+         single transcript into every field below by anchoring on spoken
+         labels ("Specimen type,", "Hospital,", ...). What follows is
+         purely the REVIEW layout for that single dictation's result: six
+         labeled blocks instead of one flowing paragraph, so the doctor
+         can scan what was captured, fix only what needs fixing, and
+         confirm — never six separate recordings. -->
     <section class="transcript" aria-live="polite">
       <div class="transcript-header">
         <h2>Transcript</h2>
@@ -105,36 +106,97 @@
           <button id="editTranscriptBtn" class="nav-btn" type="button">Edit transcript</button>
         </div>
       </div>
-      <p id="transcript" class="transcript-text">—</p>
+
+      <!-- Raw-view fallback (the untouched Whisper output) — hidden
+           unless "View raw transcript" is active; the six blocks below
+           are the default view. -->
+      <p id="transcript" class="transcript-text hidden">—</p>
 
       <!-- Edit mode: free-text correction of the normalized transcript
            (e.g. fixing a Whisper spelling mistake) before confirming.
            Hidden unless editTranscriptBtn is pressed — see app.js's
            enterEditMode()/saveTranscriptEdit()/cancelTranscriptEdit().
-           This only changes the displayed/submitted TEXT, never
-           re-extracts tests_required or other structured fields. -->
+           Saving re-parses the edited text through the SAME
+           field_extraction.py used by /transcribe (POST /extract-fields)
+           so the blocks below never go stale relative to a hand-typed
+           correction. -->
       <textarea id="transcriptEditArea" class="transcript-edit-area hidden"></textarea>
       <div id="transcriptEditActions" class="matches-actions hidden">
         <button id="saveTranscriptEditBtn" class="primary-btn" type="button">Save edits</button>
         <button id="cancelTranscriptEditBtn" class="nav-btn" type="button">Cancel</button>
       </div>
 
-      <div id="specimenSection" class="specimen-section hidden">
-        <h3 class="specimen-section-title">Tubes Required</h3>
-        <div id="specimenGroups" class="specimen-groups"></div>
+      <!-- Validation summary — recomputed after every transcription,
+           resolve, or edit. Lists exactly what's missing/unresolved;
+           never requires repeating the whole dictation to fix one gap
+           (use "Edit transcript" for that). See app.js's
+           getIncompleteFields()/refreshValidation(). -->
+      <div id="incompleteBanner" class="incomplete-banner hidden" role="alert">
+        <h3 class="incomplete-title">Request incomplete</h3>
+        <p class="incomplete-hint">Missing or unresolved:</p>
+        <ul id="incompleteList" class="incomplete-list"></ul>
       </div>
-    </section>
 
-    <!-- Tests required, extracted from the transcript and normalized to
-         canonical NHLS/LOINC names, shown automatically after every
-         transcription for the doctor to review and confirm. -->
-    <section id="testsSection" class="matches hidden" aria-live="polite">
-      <h2>Tests required</h2>
-      <ul id="testsList" class="matches-list"></ul>
-      <p id="testsEmpty" class="empty-msg hidden">No tests required were recognized.</p>
-      <div class="matches-actions">
-        <button id="confirmTestsBtn" class="primary-btn" type="button">Confirm &amp; save</button>
-        <button id="skipTestsBtn" class="nav-btn" type="button">Skip</button>
+      <!-- Six review blocks, populated from the SAME structured result
+           /transcribe already returns — purely a different rendering of
+           existing data, not a different data shape. See app.js's
+           renderAllBlocks(). -->
+      <div id="blocksContainer" class="blocks-container">
+        <div class="field-block">
+          <h3 class="field-block-title">Specimen</h3>
+          <dl id="blockSpecimen" class="field-list"></dl>
+        </div>
+
+        <div class="field-block">
+          <h3 class="field-block-title">Hospital</h3>
+          <dl id="blockHospital" class="field-list"></dl>
+        </div>
+
+        <div class="field-block">
+          <h3 class="field-block-title">Patient</h3>
+          <dl id="blockPatient" class="field-list"></dl>
+        </div>
+
+        <div class="field-block">
+          <h3 class="field-block-title">Clinical</h3>
+          <dl id="blockClinical" class="field-list"></dl>
+        </div>
+
+        <!-- Tests required + Tubes required — the EXISTING panels,
+             relocated here unchanged (same IDs, same app.js functions:
+             renderTests()/renderSpecimenGroups()), plus a new
+             confirmation checkbox gating Done. -->
+        <div class="field-block">
+          <h3 class="field-block-title">Tests required</h3>
+
+          <section id="testsSection" class="matches hidden" aria-live="polite">
+            <ul id="testsList" class="matches-list"></ul>
+            <p id="testsEmpty" class="empty-msg hidden">No tests required were recognized.</p>
+            <div class="matches-actions">
+              <button id="confirmTestsBtn" class="primary-btn" type="button">Confirm &amp; save</button>
+              <button id="skipTestsBtn" class="nav-btn" type="button">Skip</button>
+            </div>
+          </section>
+
+          <div id="specimenSection" class="specimen-section hidden">
+            <h4 class="specimen-section-title">Tubes Required</h4>
+            <div id="specimenGroups" class="specimen-groups"></div>
+          </div>
+
+          <!-- Re-unchecked automatically whenever specimen_requirements
+               changes (app.js's refreshSpecimenRequirements()) — a stale
+               confirmation must never silently survive a change to what
+               it's confirming. -->
+          <label class="specimen-confirm-label">
+            <input type="checkbox" id="specimenConfirmCheckbox" />
+            <span>I confirm that I have checked the specimen/container requirements and used the correct collection tubes/containers.</span>
+          </label>
+        </div>
+
+        <div class="field-block">
+          <h3 class="field-block-title">Priority</h3>
+          <dl id="blockPriority" class="field-list"></dl>
+        </div>
       </div>
     </section>
 

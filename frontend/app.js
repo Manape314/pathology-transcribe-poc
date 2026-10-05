@@ -20,12 +20,87 @@ const skipTestsBtn = document.getElementById("skipTestsBtn");
 
 const specimenSection = document.getElementById("specimenSection");
 const specimenGroups = document.getElementById("specimenGroups");
+const specimenConfirmCheckbox = document.getElementById("specimenConfirmCheckbox");
+
+const incompleteBanner = document.getElementById("incompleteBanner");
+const incompleteList = document.getElementById("incompleteList");
+const blocksContainer = document.getElementById("blocksContainer");
+const blockSpecimen = document.getElementById("blockSpecimen");
+const blockHospital = document.getElementById("blockHospital");
+const blockPatient = document.getElementById("blockPatient");
+const blockClinical = document.getElementById("blockClinical");
+const blockPriority = document.getElementById("blockPriority");
 
 const printSection = document.getElementById("printSection");
 const doneBtn = document.getElementById("doneBtn");
 const retryPrintBtn = document.getElementById("retryPrintBtn");
 const printStatus = document.getElementById("printStatus");
 const printLabelImage = document.getElementById("printLabelImage");
+
+// ---------------------------------------------------------------------------
+// Six-block review layout — purely a different RENDERING of the same
+// structured result /transcribe already returns from the single dictation
+// (see backend/field_extraction.py's _LABEL_DEFS/_DISPLAY_FIELDS, which
+// this mirrors). "kind" picks how each field renders:
+//   "plain"    -> {raw, value, status} passthrough, escaped text
+//   "date"     -> confirmed value, or raw + "[unconfirmed]" if ambiguous
+//   "time"     -> same as date, but offers the AM/PM quick-pick when the
+//                 raw text looks like it's just missing am/pm
+//   "clinical" -> {raw, value, status, resolved_terms} — value rendered
+//                 with inline ambiguous-term highlighting (same mechanism
+//                 as before, just scoped to one field instead of the
+//                 whole transcript)
+// ---------------------------------------------------------------------------
+const BLOCK_DEFS = [
+  [blockSpecimen, [
+    ["specimen_type", "Specimen type", "plain"],
+    ["specimen_site", "Specimen site", "plain"],
+    ["date_collected", "Date collected", "date"],
+    ["time_collected", "Time collected", "time"],
+    ["reason_for_request", "Reason for request", "plain"],
+  ]],
+  [blockHospital, [
+    ["hospital", "Hospital", "plain"],
+    ["ward", "Ward", "plain"],
+  ]],
+  [blockPatient, [
+    ["patient_name", "Patient name", "plain"],
+    ["date_of_birth", "Date of birth", "date"],
+    ["patient_id", "Patient hospital number", "plain"],
+  ]],
+  [blockClinical, [
+    ["clinical_history", "Clinical history", "clinical"],
+    ["provisional_diagnosis", "Provisional diagnosis", "clinical"],
+    ["medication", "Relevant medication", "clinical"],
+  ]],
+  [blockPriority, [
+    ["priority", "Priority", "plain"],
+    ["date_requested", "Date requested", "date"],
+    ["time_requested", "Time requested", "time"],
+  ]],
+];
+
+// The dictation proforma's required fields (backend/README's template) —
+// tests_required is checked separately below (needs a non-empty-array
+// check, not a {value} check). date_of_birth/patient_name/medication/etc.
+// exist but aren't required — dictating without them never blocks Done.
+const REQUIRED_PLAIN_FIELDS = [
+  ["specimen_type", "Specimen type"],
+  ["specimen_site", "Specimen site"],
+  ["reason_for_request", "Reason for request"],
+  ["hospital", "Hospital"],
+  ["ward", "Ward"],
+  ["patient_id", "Patient hospital number"],
+  ["priority", "Priority"],
+];
+const REQUIRED_CLINICAL_FIELDS = [
+  ["clinical_history", "Clinical history"],
+  ["provisional_diagnosis", "Provisional diagnosis"],
+];
+const REQUIRED_DATE_TIME_FIELDS = [
+  ["date_collected", "Date collected"],
+  ["time_collected", "Time collected"],
+];
 
 let printStatusPollTimer = null; // see pollPrintStatus() — cleared on a new submission/recording
 
@@ -133,7 +208,8 @@ async function sendForTranscription(blob) {
     currentRawText = data.raw_text || "";
     currentStructured = data.structured || {};
     showingRaw = false;
-    updateTranscriptView();
+    specimenConfirmCheckbox.checked = false; // a new request — any prior confirmation doesn't apply
+    updateTranscriptView(); // renders the six blocks + validation banner
 
     currentEntryId = currentNormalizedText
       ? addHistoryEntry(currentNormalizedText, currentRawText)
@@ -143,6 +219,7 @@ async function sendForTranscription(blob) {
       renderSpecimenGroups(currentStructured.specimen_requirements || []);
       showPrintSection();
     }
+    refreshValidation();
 
     setStatus(
       `Done — detected ${data.language}, ${data.duration.toFixed(1)}s of audio.`
@@ -184,8 +261,13 @@ function collectAmbiguousItems() {
 
   function pushEntry(field, raw, candidates, item) {
     const marker = `${raw} [ambiguous — please confirm]`;
-    const occurrenceIndex = occurrenceCounters.get(marker) || 0;
-    occurrenceCounters.set(marker, occurrenceIndex + 1);
+    // Keyed per (field, marker) — highlightAmbiguousMarkers() now searches
+    // within one field's own isolated text at a time (one block each),
+    // not the single whole-transcript string this was originally written
+    // for, so the occurrence count must restart per field.
+    const counterKey = `${field}::${marker}`;
+    const occurrenceIndex = occurrenceCounters.get(counterKey) || 0;
+    occurrenceCounters.set(counterKey, occurrenceIndex + 1);
     items.push({ field, raw, candidates, item, marker, occurrenceIndex });
   }
 
@@ -222,17 +304,23 @@ function nthIndexOf(haystack, needle, n) {
 
 const ambiguousItemsById = new Map();
 
-function renderNormalizedHtml(text) {
+// Wraps every marker in `items` (a pre-filtered subset of
+// collectAmbiguousItems(), one field's worth) that's found inside `text`
+// in a clickable <span>. This is the SAME algorithm the old whole-
+// transcript renderer used, just scoped to one field's own text instead
+// of the full reconstructed paragraph — called once per clinical block
+// field (Clinical history / Provisional diagnosis / Relevant medication),
+// so IDs accumulate across a render pass; callers clear
+// ambiguousItemsById ONCE before the first call, not per field.
+function highlightAmbiguousMarkers(text, items) {
   const escaped = escapeHtml(text);
-  const ambiguousItems = collectAmbiguousItems();
-  ambiguousItemsById.clear();
 
   const insertions = [];
-  ambiguousItems.forEach((entry, index) => {
+  items.forEach((entry) => {
     const escapedMarker = escapeHtml(entry.marker);
     const pos = nthIndexOf(escaped, escapedMarker, entry.occurrenceIndex);
-    if (pos === -1) return; // not present in the current text — nothing to highlight
-    const id = `amb-${index}`;
+    if (pos === -1) return; // not present in this field's text — nothing to highlight
+    const id = `amb-${ambiguousItemsById.size}`;
     ambiguousItemsById.set(id, entry);
     insertions.push({ start: pos, end: pos + escapedMarker.length, id, html: escapedMarker });
   });
@@ -250,17 +338,225 @@ function renderNormalizedHtml(text) {
   return html;
 }
 
+// Builds the two AM/PM quick-pick buttons for a time field that was
+// dictated without am/pm (datetime_normalize.normalize_time() already
+// refuses to guess — see backend/field_extraction.py). Clicking one
+// calls POST /normalize-time with the SAME raw text + the chosen suffix,
+// so "what counts as a valid time" has exactly one definition, never
+// duplicated in JavaScript.
+function renderAmPmQuickPick(fieldKey, raw) {
+  const escapedRaw = escapeHtml(raw);
+  return (
+    `<span class="ampm-prompt">"${escapedRaw}" — ` +
+    `<button type="button" class="ampm-btn" data-field-key="${fieldKey}" data-raw="${escapedRaw}" data-ampm="AM">${escapedRaw} AM</button> ` +
+    `<button type="button" class="ampm-btn" data-field-key="${fieldKey}" data-raw="${escapedRaw}" data-ampm="PM">${escapedRaw} PM</button>` +
+    `</span>`
+  );
+}
+
+function appendFieldRow(dl, label, valueHtml) {
+  const dt = document.createElement("dt");
+  dt.textContent = label;
+  const dd = document.createElement("dd");
+  dd.innerHTML = valueHtml;
+  dl.appendChild(dt);
+  dl.appendChild(dd);
+}
+
+function renderBlockField(dl, key, label, kind) {
+  if (kind === "plain") {
+    const field = currentStructured[key];
+    if (!field || !field.value) return; // skip empty — same convention as build_normalized_text
+    appendFieldRow(dl, label, escapeHtml(field.value));
+    return;
+  }
+
+  if (kind === "date" || kind === "time") {
+    if (!(key in currentStructured)) return;
+    const value = currentStructured[key];
+    const status = currentStructured[`${key}_status`];
+    if (status === "confirmed" && value) {
+      appendFieldRow(dl, label, escapeHtml(value));
+      return;
+    }
+    const raw = currentStructured[`${key}_raw`] || "";
+    if (!raw) return; // nothing was dictated for this field at all
+    // Only offer the quick-pick when am/pm is plausibly the ONLY thing
+    // missing — anything stranger ("around three", "this morning") still
+    // falls back to the plain "[unconfirmed]" text + Edit transcript.
+    if (kind === "time" && !/[ap]\.?\s*m\.?/i.test(raw)) {
+      appendFieldRow(dl, label, renderAmPmQuickPick(key, raw));
+    } else {
+      appendFieldRow(
+        dl, label,
+        `<span class="field-unconfirmed">${escapeHtml(raw)} [unconfirmed — please verify]</span>`
+      );
+    }
+    return;
+  }
+
+  if (kind === "clinical") {
+    const field = currentStructured[key];
+    if (!field || !field.value) return;
+    const items = collectAmbiguousItems().filter((entry) => entry.field === key);
+    appendFieldRow(dl, label, highlightAmbiguousMarkers(field.value, items));
+  }
+}
+
+function renderAllBlocks() {
+  ambiguousItemsById.clear(); // one shared id sequence across the whole render pass
+  BLOCK_DEFS.forEach(([dl, fields]) => {
+    dl.innerHTML = "";
+    fields.forEach(([key, label, kind]) => renderBlockField(dl, key, label, kind));
+  });
+}
+
+// Everything the doctor must still do before "Done" is allowed — see
+// README's required-field list (mirrors the dictation proforma). Returns
+// human-readable labels, not field keys, so the banner can show them
+// directly.
+function getIncompleteFields(structured) {
+  const missing = [];
+
+  REQUIRED_PLAIN_FIELDS.forEach(([key, label]) => {
+    const field = structured[key];
+    if (!field || !field.value || !field.value.trim()) missing.push(label);
+  });
+
+  REQUIRED_CLINICAL_FIELDS.forEach(([key, label]) => {
+    const field = structured[key];
+    if (!field || !field.value || !field.value.trim()) missing.push(label);
+  });
+
+  REQUIRED_DATE_TIME_FIELDS.forEach(([key, label]) => {
+    if (structured[`${key}_status`] !== "confirmed") missing.push(label);
+  });
+
+  const tests = structured.tests_required || [];
+  if (tests.length === 0) missing.push("Tests required");
+
+  const hasUnresolvedAmbiguous =
+    tests.some((t) => t.status === "ambiguous") ||
+    ["clinical_history", "provisional_diagnosis", "medication"].some((key) => {
+      const field = structured[key];
+      return field && (field.resolved_terms || []).some((t) => t.status === "ambiguous");
+    });
+  if (hasUnresolvedAmbiguous) {
+    missing.push("Unresolved ambiguous term(s) — tap the highlighted text to resolve");
+  }
+
+  return missing;
+}
+
+// The single place that decides whether "Done" is allowed and what the
+// incomplete-request banner shows — called after every transcription,
+// resolve action, edit, and checkbox change, so it's never possible for
+// the button to drift out of sync with the actual data. The banner itself
+// only makes sense next to the structured blocks, so it stays hidden
+// while viewing the raw transcript.
+function refreshValidation() {
+  const incomplete = currentEntryId ? getIncompleteFields(currentStructured) : [];
+
+  if (showingRaw || incomplete.length === 0) {
+    incompleteBanner.classList.add("hidden");
+    incompleteList.innerHTML = "";
+  } else {
+    incompleteList.innerHTML = "";
+    incomplete.forEach((label) => {
+      const li = document.createElement("li");
+      li.textContent = label;
+      incompleteList.appendChild(li);
+    });
+    incompleteBanner.classList.remove("hidden");
+  }
+
+  doneBtn.disabled =
+    !currentEntryId || editingTranscript || incomplete.length > 0 || !specimenConfirmCheckbox.checked;
+}
+
+specimenConfirmCheckbox.addEventListener("change", refreshValidation);
+
+// Regenerates currentNormalizedText (the flat string that's actually
+// saved/printed/looked-up) from the CURRENT currentStructured, via the
+// same build_normalized_text() reconstruction the backend already uses
+// everywhere else — never hand-patched in JavaScript. Called after any
+// action that mutates a structured field directly (ambiguous-term
+// resolve, AM/PM resolve) rather than through the free-text Edit box.
+async function rebuildNormalizedText() {
+  try {
+    const res = await fetch(`${BACKEND_URL}/rebuild-transcript`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ structured: currentStructured }),
+    });
+    if (!res.ok) throw new Error(`Server responded ${res.status}`);
+    const data = await res.json();
+    currentNormalizedText = data.normalized_text || currentNormalizedText;
+  } catch (err) {
+    console.error("Failed to rebuild transcript text:", err);
+    // The live block view (read straight from currentStructured) is
+    // still correct even if this particular resync failed — only the
+    // flat string used for History/submission would lag until the next
+    // successful resolve.
+  }
+}
+
+async function resolveTimeAmPm(fieldKey, raw, ampm) {
+  try {
+    const res = await fetch(`${BACKEND_URL}/normalize-time`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ raw: `${raw} ${ampm}` }),
+    });
+    if (!res.ok) throw new Error(`Server responded ${res.status}`);
+    const data = await res.json();
+
+    currentStructured[fieldKey] = data.value;
+    currentStructured[`${fieldKey}_status`] = data.status;
+    currentStructured[`${fieldKey}_raw`] = `${raw} ${ampm}`;
+
+    await rebuildNormalizedText();
+    updateTranscriptView();
+    updateHistoryText(currentEntryId, currentNormalizedText);
+    setStatus(`Resolved time → ${data.value} (${ampm}).`);
+  } catch (err) {
+    console.error(err);
+    setStatus("Failed to resolve time: " + err.message);
+  }
+}
+
+// Single delegated listener for both interaction types that live inside
+// the six blocks: ambiguous-term highlights (clinical_history/
+// provisional_diagnosis/medication) and the AM/PM quick-pick buttons.
+blocksContainer.addEventListener("click", (e) => {
+  const ampmBtn = e.target.closest(".ampm-btn");
+  if (ampmBtn) {
+    e.stopPropagation();
+    resolveTimeAmPm(ampmBtn.dataset.fieldKey, ampmBtn.dataset.raw, ampmBtn.dataset.ampm);
+    return;
+  }
+  const span = e.target.closest(".ambiguous-highlight");
+  if (span) {
+    e.stopPropagation();
+    const entry = ambiguousItemsById.get(span.dataset.ambId);
+    if (entry) openAmbiguousPopup(span, entry);
+  }
+});
+
 function updateTranscriptView() {
   if (showingRaw) {
     transcriptEl.textContent = currentRawText || "(no speech detected)";
-  } else if (currentNormalizedText) {
-    transcriptEl.innerHTML = renderNormalizedHtml(currentNormalizedText);
+    transcriptEl.classList.remove("hidden");
+    blocksContainer.classList.add("hidden");
   } else {
-    transcriptEl.textContent = "(no speech detected)";
+    transcriptEl.classList.add("hidden");
+    blocksContainer.classList.remove("hidden");
+    renderAllBlocks();
   }
   toggleRawBtn.textContent = showingRaw
     ? "View normalized transcript"
     : "View raw transcript";
+  refreshValidation();
 }
 
 function resetTranscriptView() {
@@ -270,8 +566,8 @@ function resetTranscriptView() {
   currentStructured = {};
   currentEntryId = null;
   showingRaw = false;
-  transcriptEl.textContent = "—";
-  toggleRawBtn.textContent = "View raw transcript";
+  specimenConfirmCheckbox.checked = false;
+  updateTranscriptView();
 }
 
 toggleRawBtn.addEventListener("click", () => {
@@ -281,15 +577,14 @@ toggleRawBtn.addEventListener("click", () => {
 
 // ---------------------------------------------------------------------------
 // Transcript edit mode — free-text correction (e.g. a Whisper spelling
-// mistake) before the doctor confirms/finalizes. Deliberately narrow: this
-// only changes the normalized_text STRING that gets displayed, saved to
-// History, and submitted to /print-label — it never re-runs transcription
-// or re-extracts tests_required/other structured fields from the edited
-// text. renderNormalizedHtml() already tolerates an ambiguous-term marker
-// no longer being found in the text (it just skips highlighting it), so
-// editing through a marker's text degrades gracefully rather than erroring
-// — the doctor should use the ambiguous-term popup or Tests required panel
-// for anything beyond wording.
+// mistake, or typing in a field the doctor forgot to dictate) before
+// confirming. Saving RE-PARSES the edited text through the same
+// field_extraction.py used by /transcribe (POST /extract-fields), so the
+// six blocks and the completeness check never go stale relative to a
+// hand-typed correction — this is also why "least disruptive mechanism
+// already supported" doubles as the fix for a missing field: typing
+// "Priority: Routine" into this box and saving makes Priority show up
+// resolved in its block, exactly as if it had been dictated.
 // ---------------------------------------------------------------------------
 
 function enterEditMode() {
@@ -298,6 +593,8 @@ function enterEditMode() {
   editingTranscript = true;
   transcriptEditArea.value = currentNormalizedText;
   transcriptEl.classList.add("hidden");
+  blocksContainer.classList.add("hidden");
+  incompleteBanner.classList.add("hidden");
   toggleRawBtn.classList.add("hidden");
   editTranscriptBtn.classList.add("hidden");
   transcriptEditArea.classList.remove("hidden");
@@ -311,20 +608,38 @@ function exitEditMode() {
   transcriptEditArea.value = "";
   transcriptEditArea.classList.add("hidden");
   transcriptEditActions.classList.add("hidden");
-  transcriptEl.classList.remove("hidden");
   toggleRawBtn.classList.remove("hidden");
   editTranscriptBtn.classList.remove("hidden");
-  doneBtn.disabled = false;
+  updateTranscriptView(); // re-shows raw text or blocks (whichever showingRaw says) + re-validates
 }
 
-function saveTranscriptEdit() {
-  currentNormalizedText = transcriptEditArea.value;
-  exitEditMode();
-  updateTranscriptView();
-  if (currentEntryId) {
-    updateHistoryText(currentEntryId, currentNormalizedText);
+async function saveTranscriptEdit() {
+  const editedText = transcriptEditArea.value;
+  saveTranscriptEditBtn.disabled = true;
+  try {
+    const res = await fetch(`${BACKEND_URL}/extract-fields`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: editedText }),
+    });
+    if (!res.ok) throw new Error(`Server responded ${res.status}`);
+    const data = await res.json();
+
+    currentStructured = data.structured || {};
+    currentNormalizedText = data.normalized_text || editedText;
+    exitEditMode();
+    if (currentEntryId) {
+      renderTests(currentEntryId, currentStructured.tests_required || []);
+      renderSpecimenGroups(currentStructured.specimen_requirements || []);
+      updateHistoryText(currentEntryId, currentNormalizedText);
+    }
+    setStatus("Transcript updated.");
+  } catch (err) {
+    console.error(err);
+    setStatus("Failed to save edits: " + err.message);
+  } finally {
+    saveTranscriptEditBtn.disabled = false;
   }
-  setStatus("Transcript updated.");
 }
 
 function cancelTranscriptEdit() {
@@ -354,15 +669,9 @@ function closeAmbiguousPopup() {
   }
 }
 
-transcriptEl.addEventListener("click", (e) => {
-  const span = e.target.closest(".ambiguous-highlight");
-  if (!span) return;
-  e.stopPropagation();
-  const entry = ambiguousItemsById.get(span.dataset.ambId);
-  if (entry) {
-    openAmbiguousPopup(span, entry);
-  }
-});
+// Ambiguous-term clicks are handled by the single delegated listener on
+// blocksContainer (see above, near highlightAmbiguousMarkers) — that's
+// where these spans actually live now; transcriptEl is raw-text-only.
 
 function openAmbiguousPopup(anchorEl, entry) {
   closeAmbiguousPopup();
@@ -426,16 +735,7 @@ function openAmbiguousPopup(anchorEl, entry) {
 }
 
 async function resolveAmbiguousItem(entry, candidate) {
-  const replacement = `${candidate.canonical_name} (${entry.raw})`;
-  const pos = nthIndexOf(currentNormalizedText, entry.marker, entry.occurrenceIndex);
-  if (pos !== -1) {
-    currentNormalizedText =
-      currentNormalizedText.slice(0, pos) +
-      replacement +
-      currentNormalizedText.slice(pos + entry.marker.length);
-  }
-
-  // Mutate the underlying item in place so re-rendering (transcript AND the
+  // Mutate the underlying item in place so re-rendering (blocks AND the
   // Tests required panel) reflects the resolution and doesn't re-highlight it.
   Object.assign(entry.item, {
     status: "confirmed",
@@ -457,6 +757,10 @@ async function resolveAmbiguousItem(entry, candidate) {
   }
 
   closeAmbiguousPopup();
+  // Regenerate the flat normalized_text from the now-updated
+  // currentStructured (build_normalized_text() server-side), rather than
+  // hand-splicing the marker string — one reconstruction path, not two.
+  await rebuildNormalizedText();
   updateTranscriptView();
   if (entry.field === "tests_required") {
     renderTests(currentEntryId, currentStructured.tests_required || []);
@@ -487,6 +791,10 @@ async function refreshSpecimenRequirements() {
     const data = await res.json();
     currentStructured.specimen_requirements = data.specimen_requirements;
     renderSpecimenGroups(currentStructured.specimen_requirements);
+    // A stale confirmation must never silently survive a change to what
+    // it's confirming — force the doctor to re-check it.
+    specimenConfirmCheckbox.checked = false;
+    refreshValidation();
   } catch (err) {
     console.error("Failed to refresh specimen requirements:", err);
   }
@@ -578,10 +886,14 @@ function renderTests(entryId, testsRequired) {
       label.textContent = "Ambiguous medical abbreviation";
       body.appendChild(label);
 
-      const hint = document.createElement("p");
-      hint.className = "match-hint";
-      hint.textContent = "Tap the highlighted term in the transcript above to choose what you meant.";
-      body.appendChild(hint);
+      const resolveBtn = document.createElement("button");
+      resolveBtn.type = "button";
+      resolveBtn.className = "ambiguous-resolve-btn";
+      resolveBtn.textContent = `"${item.raw}" — choose what you meant`;
+      resolveBtn.addEventListener("click", () => {
+        openAmbiguousPopup(resolveBtn, { field: "tests_required", raw: item.raw, candidates: item.candidates, item });
+      });
+      body.appendChild(resolveBtn);
     } else {
       const warning = document.createElement("p");
       warning.className = "match-name";
@@ -744,7 +1056,9 @@ doneBtn.addEventListener("click", async () => {
     console.error(err);
     printStatus.textContent = "Failed to reach the server: " + err.message;
   } finally {
-    doneBtn.disabled = false;
+    // Re-enable only if the request is still actually complete — a
+    // failed submit must not leave Done clickable past validation.
+    refreshValidation();
   }
 });
 
