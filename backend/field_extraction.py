@@ -107,18 +107,42 @@ _NO_SPLIT_SUFFIXES = [
 _SENTENCE_END_RE = re.compile(r"\.(?=\s+[A-Z]|\s*$)")
 
 
-def _is_real_label(text: str, match_end: int) -> bool:
-    """A label match only counts if a comma/colon appears before any period
-    within a short lookahead — this is what distinguishes the "Hospital,"
-    LABEL from "Ubuntu Academic Hospital." (the word appearing inside a
-    value), and tolerates minor recognition noise between a label and its
-    comma (e.g. "Priority agent," instead of a clean "Priority,")."""
+def _is_real_label(text: str, match_start: int, match_end: int) -> bool:
+    """A label match counts as real if EITHER of two independent signals
+    says so — the doctor is never required to dictate any punctuation at
+    all (no "comma", no "colon"), but Whisper reliably punctuates the
+    natural pauses in real speech, and this leans on whichever pause the
+    doctor actually made:
+
+    1. A comma/colon appears before any period within a short lookahead
+       — the doctor paused right after the label word itself ("Hospital,
+       Ubuntu..." or "Hospital: Ubuntu...").
+    2. The label is immediately preceded by the start of the transcript,
+       or by a PERIOD left over from the previous field's sentence
+       ending — the doctor paused BETWEEN fields instead, which is the
+       natural rhythm of reading down a list of fields aloud without
+       narrating punctuation ("...blood. Specimen site of collection
+       left antecubital fossa." — no comma anywhere near the label, but
+       Whisper still punctuates the pause before it).
+
+    Signal 2 deliberately checks for a PERIOD only, never a comma —
+    a comma right before a match is usually the current field's OWN
+    label/value separator (e.g. "Ward, Medical Ward 3B." — the second,
+    coincidental "Ward" inside "Medical Ward" is directly preceded by
+    that very comma, and must NOT be mistaken for a fresh field
+    boundary). It's also what distinguishes the real "Hospital," LABEL
+    from "Ubuntu Academic Hospital." (the word appearing inside a value,
+    with an ordinary word — not a period — immediately before it)
+    without relying on signal 1's comma at all.
+    """
     window = text[match_end : match_end + _LOOKAHEAD]
     comma_pos = min((p for p in (window.find(","), window.find(":")) if p != -1), default=-1)
     period_pos = window.find(".")
-    if comma_pos == -1:
-        return False
-    return period_pos == -1 or comma_pos < period_pos
+    if comma_pos != -1 and (period_pos == -1 or comma_pos < period_pos):
+        return True
+
+    preceding = text[:match_start].rstrip()
+    return not preceding or preceding[-1] == "."
 
 
 def _is_abbreviation_period(text: str, pos: int) -> bool:
@@ -139,7 +163,7 @@ def _find_label_matches(text: str) -> list[tuple[int, int, str]]:
     matches = []
     for field_key, pattern in _LABEL_DEFS:
         for m in re.finditer(pattern, text, re.IGNORECASE):
-            if _is_real_label(text, m.end()):
+            if _is_real_label(text, m.start(), m.end()):
                 matches.append((m.start(), m.end(), field_key))
     matches.sort(key=lambda t: t[0])
     return matches

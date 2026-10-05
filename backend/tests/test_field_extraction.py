@@ -321,3 +321,64 @@ def test_time_of_collection_without_am_pm_stays_ambiguous_never_guessed():
     assert result["time_collected"] is None
     assert result["time_collected_status"] == "ambiguous"
     assert result["time_collected_raw"] == "10:30"
+
+
+def test_dictation_with_no_comma_or_colon_anywhere_still_extracts_every_field():
+    # The doctor is never required to dictate punctuation ("comma",
+    # "colon") — only the natural pause BETWEEN fields (which Whisper
+    # punctuates as a period) is relied on. Same transcript as
+    # test_dictation_proforma_exact_wording_extracts_every_field_cleanly,
+    # with every comma removed.
+    transcript = (
+        "Specimen type blood. Specimen site of collection left antecubital "
+        "fossa. Date of collection 5 October 2026. Time of collection "
+        "10:30 AM. Reason for request suspected anaemia. Hospital or "
+        "clinic name Greenside Clinic. Ward Medical Ward 3B. Patient "
+        "hospital number H123456. Clinical history fatigue and weakness "
+        "for four days. Provisional diagnosis iron deficiency anaemia. "
+        "Tests required Full Blood Count and Urea and Electrolytes. "
+        "Priority routine."
+    )
+    result = extract_fields(transcript)
+
+    assert result["specimen_type"]["value"] == "blood"
+    assert result["specimen_site"]["value"] == "left antecubital fossa"
+    assert result["date_collected"] == "2026-10-05"
+    assert result["time_collected"] == "10:30"
+    assert result["reason_for_request"]["value"] == "suspected anaemia"
+    assert result["hospital"]["value"] == "Greenside Clinic"
+    assert result["ward"]["value"] == "Medical Ward 3B"
+    assert result["patient_id"]["value"] == "H123456"
+    assert result["clinical_history"]["value"] == "fatigue and weakness for four days"
+    assert result["provisional_diagnosis"]["value"] == "iron deficiency anaemia"
+    assert result["priority"]["value"] == "routine"
+    assert result["unparsed_text"] == []
+
+
+def test_ward_value_containing_the_word_ward_is_not_split_mid_value():
+    # Regression lock: "Ward, Medical Ward 3B." — the ward VALUE itself
+    # contains the word "Ward" again. Before this fix, that coincidental
+    # second occurrence (directly preceded by the real label's own
+    # comma) was mistaken for a second label match, truncating the
+    # value down to just "3B".
+    result = extract_fields(
+        "Ward, Medical Ward 3B. Patient hospital number, H123456. "
+        "Priority, routine."
+    )
+    assert result["ward"]["value"] == "Medical Ward 3B"
+
+
+def test_incidental_mid_sentence_label_word_is_not_mistaken_for_a_field():
+    # A risky word (here "priority") appearing mid-sentence inside free
+    # text, not as its own dictated field, must never be mistaken for a
+    # real label just because punctuation relaxation now allows labels
+    # without a comma — it's preceded by an ordinary word, not a period,
+    # so it still fails both acceptance signals.
+    result = extract_fields(
+        "Clinical history, patient reports this is a priority case for "
+        "triage. Priority, routine."
+    )
+    assert result["clinical_history"]["value"] == (
+        "patient reports this is a priority case for triage"
+    )
+    assert result["priority"]["value"] == "routine"

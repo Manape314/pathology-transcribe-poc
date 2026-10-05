@@ -347,20 +347,37 @@ way the abbreviation dictionaries are.
 ### Single dictation, six-block review
 
 An always-visible **dictation guide** (`.dictation-guide` in
-`index.html`) sits above the `Record` button on the main screen — the
-exact field labels `_LABEL_DEFS` anchors on, in dictation order, each
-with a worked example ("Specimen type, e.g. 'Blood.'"), so the doctor
-knows what to say *before* recording, not just what was captured
-afterward. It mirrors the dictation proforma's canonical wording exactly
-("Specimen site of collection,", "Date of collection,", "Time of
-collection,", "Hospital or clinic name,", "Patient hospital number,") —
-label patterns in `_LABEL_DEFS` were extended to match that exact
-wording (optional trailing "of collection"/"or clinic name" consumed as
-part of the label itself, not left to leak into the value; separate
-"Date of collection,"/"Time of collection," labels — storing into the
-same `date_collected`/`time_collected` keys — added alongside the older
-combined "Date, time collected," phrasing) so the guide shown to the
-doctor and what the parser actually accepts never drift apart.
+`index.html`) sits above the `Record` button on the main screen — one
+worked example covering every field in order ("Specimen type: blood.
+Specimen site of collection: left antecubital fossa. ..."), with an
+explicit note that the punctuation shown is for readability only and
+is never actually spoken. It mirrors the dictation proforma's canonical
+wording exactly ("Specimen site of collection,", "Date of collection,",
+"Time of collection,", "Hospital or clinic name,", "Patient hospital
+number,") — label patterns in `_LABEL_DEFS` were extended to match that
+exact wording (optional trailing "of collection"/"or clinic name"
+consumed as part of the label itself, not left to leak into the value;
+separate "Date of collection,"/"Time of collection," labels — storing
+into the same `date_collected`/`time_collected` keys — added alongside
+the older combined "Date, time collected," phrasing) so the guide shown
+to the doctor and what the parser actually accepts never drift apart.
+
+**The doctor is never required to dictate punctuation** ("comma",
+"colon") — `_is_real_label()` accepts a label match on either of two
+independent signals: a comma/colon right after the label word itself
+("Hospital, Ubuntu..."), **or** the label simply starting a fresh
+sentence — preceded by the transcript's start or by a period left over
+from the previous field ("...blood. Specimen site of collection left
+antecubital fossa." — no comma anywhere near the label, but Whisper
+still punctuates the pause between fields even when the doctor never
+says "comma"). The second signal deliberately checks for a **period**
+only, never a comma: a comma right before a candidate match is usually
+the current field's own label/value separator, not a boundary between
+two different fields — e.g. "Ward, Medical Ward 3B." has the word
+"Ward" appearing a second time inside its own value, directly after
+that comma, and must not be mistaken for a second field starting there.
+"Specimen type blood", "Specimen type: blood", and "Specimen type,
+blood" all now resolve to the same field.
 
 The doctor dictates the whole request **once** — one `Record` press, one
 `/transcribe` call, one Whisper pass. `extract_fields()` already parses
