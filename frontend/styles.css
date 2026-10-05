@@ -824,6 +824,22 @@ h1 {
   line-height: 1.6;
 }
 
+.dictation-guide-fields-label {
+  margin: 0 0 0.4rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.dictation-guide-fields {
+  margin: 0 0 0.75rem;
+  padding-left: 1.3rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.88rem;
+}
+
 .dictation-guide-hint {
   margin: 0;
   padding-top: 0.6rem;
