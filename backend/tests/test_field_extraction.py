@@ -272,3 +272,52 @@ def test_patient_hospital_number_does_not_collide_with_hospital_field():
     result = extract_fields(transcript)
     assert result["hospital"]["value"] == "Ubuntu Academic Hospital"
     assert result["patient_id"]["value"] == "H123456"
+
+
+def test_dictation_proforma_exact_wording_extracts_every_field_cleanly():
+    # Regression lock for the dictation proforma's EXACT field wording —
+    # before this fix, "Specimen site of collection,"/"Hospital or clinic
+    # name," leaked their trailing words into the value, and "Date of
+    # collection,"/"Time of collection," weren't recognized as labels at
+    # all (they fell into unparsed_text).
+    transcript = (
+        "Specimen type, Blood. Specimen site of collection, Left arm vein. "
+        "Date of collection, 5 October 2026. Time of collection, 10:30 AM. "
+        "Reason for request, suspected anaemia. Hospital or clinic name, "
+        "Greenside Clinic. Ward, Medical Ward 3B. Patient hospital number, "
+        "H123456. Clinical history, patient presents with fatigue. "
+        "Provisional diagnosis, iron deficiency anaemia. "
+        "Tests required, full blood count. Priority, routine."
+    )
+    result = extract_fields(transcript)
+
+    assert result["specimen_type"]["value"] == "Blood"
+    assert result["specimen_site"]["value"] == "Left arm vein"
+    assert result["date_collected"] == "2026-10-05"
+    assert result["date_collected_status"] == "confirmed"
+    assert result["time_collected"] == "10:30"
+    assert result["time_collected_status"] == "confirmed"
+    assert result["reason_for_request"]["value"] == "suspected anaemia"
+    assert result["hospital"]["value"] == "Greenside Clinic"
+    assert result["ward"]["value"] == "Medical Ward 3B"
+    assert result["patient_id"]["value"] == "H123456"
+    assert result["unparsed_text"] == []
+
+
+def test_bare_specimen_site_and_hospital_labels_still_work():
+    # "of collection"/"or clinic name" are optional trailing phrases on
+    # the label itself — the original bare "Specimen site,"/"Hospital,"
+    # phrasing must keep working unchanged.
+    result = extract_fields(
+        "Specimen site, Left arm vein. Hospital, Ubuntu Academic Hospital. "
+        "Priority, routine."
+    )
+    assert result["specimen_site"]["value"] == "Left arm vein"
+    assert result["hospital"]["value"] == "Ubuntu Academic Hospital"
+
+
+def test_time_of_collection_without_am_pm_stays_ambiguous_never_guessed():
+    result = extract_fields("Time of collection, 10:30. Priority, routine.")
+    assert result["time_collected"] is None
+    assert result["time_collected_status"] == "ambiguous"
+    assert result["time_collected_raw"] == "10:30"

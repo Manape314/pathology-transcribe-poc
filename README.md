@@ -346,6 +346,22 @@ way the abbreviation dictionaries are.
 
 ### Single dictation, six-block review
 
+An always-visible **dictation guide** (`.dictation-guide` in
+`index.html`) sits above the `Record` button on the main screen — the
+exact field labels `_LABEL_DEFS` anchors on, in dictation order, each
+with a worked example ("Specimen type, e.g. 'Blood.'"), so the doctor
+knows what to say *before* recording, not just what was captured
+afterward. It mirrors the dictation proforma's canonical wording exactly
+("Specimen site of collection,", "Date of collection,", "Time of
+collection,", "Hospital or clinic name,", "Patient hospital number,") —
+label patterns in `_LABEL_DEFS` were extended to match that exact
+wording (optional trailing "of collection"/"or clinic name" consumed as
+part of the label itself, not left to leak into the value; separate
+"Date of collection,"/"Time of collection," labels — storing into the
+same `date_collected`/`time_collected` keys — added alongside the older
+combined "Date, time collected," phrasing) so the guide shown to the
+doctor and what the parser actually accepts never drift apart.
+
 The doctor dictates the whole request **once** — one `Record` press, one
 `/transcribe` call, one Whisper pass. `extract_fields()` already parses
 that single transcript into every field above by anchoring on the spoken

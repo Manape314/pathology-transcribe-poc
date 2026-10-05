@@ -780,6 +780,53 @@ h1 {
   font-size: 0.9rem;
 }
 
+/* ---- Always-visible dictation guide — shown above the Record button,
+   not after transcription; tells the doctor exactly what to say, in the
+   same order and wording backend/field_extraction.py's _LABEL_DEFS
+   anchors on. ---- */
+
+.dictation-guide {
+  margin-top: 1rem;
+  padding: 1rem 1.25rem;
+  background: var(--card);
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  text-align: left;
+}
+
+.dictation-guide-title {
+  margin: 0 0 0.75rem;
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+}
+
+.dictation-guide-list {
+  margin: 0 0 0.75rem;
+  padding-left: 1.3rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  font-size: 0.9rem;
+}
+
+.dictation-guide-list strong {
+  color: var(--text);
+}
+
+.guide-example {
+  color: var(--muted);
+}
+
+.dictation-guide-hint {
+  margin: 0;
+  padding-top: 0.75rem;
+  border-top: 1px solid #e2e8f0;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
 /* ---- Six-block transcript review (single dictation, structured
    display) — same card language as .matches/.match-item above, just
    grouped into labeled sections instead of one flowing paragraph. ---- */

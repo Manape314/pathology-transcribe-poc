@@ -47,17 +47,30 @@ _LABEL_DEFS = [
     ("patient_id", r"patient\s+id|patient\s+hospital\s+number"),
     ("date_of_birth", r"date\s+of\s+birth"),
     ("ward", r"medical\s+ward|\bward\b"),
-    # Negative lookbehind excludes the word "hospital" when it's part of
-    # "patient hospital number" (added above as a patient_id alias) —
-    # without this, that phrase's own "hospital" would get mistaken for
-    # a second, bogus "Hospital:" label mid-sentence.
-    ("hospital", r"(?<!patient\s)hospital\b"),
+    # "of clinic name" is an optional trailing phrase on the label itself —
+    # the dictation proforma says "Hospital or clinic name,"; without
+    # consuming it here, it would leak into the VALUE (e.g. "or clinic
+    # name, Greenside Clinic" instead of "Greenside Clinic"). Negative
+    # lookbehind still excludes the word "hospital" when it's part of
+    # "patient hospital number" (added above as a patient_id alias).
+    ("hospital", r"(?<!patient\s)hospital(?:\s+or\s+clinic\s+name)?\b"),
     ("date_time_collected", r"date,?\s+time\s+collected|date\s+and\s+time\s+collected"),
+    # Separate "Date of collection,"/"Time of collection," labels — the
+    # dictation proforma's canonical wording, dictated as two distinct
+    # fields rather than the combined "Date, time collected," phrasing
+    # above. Both produce the SAME date_collected/time_collected storage
+    # keys (see _DATE_FIELDS/_TIME_FIELDS below) — either phrasing works.
+    ("date_collected", r"date\s+of\s+collection"),
+    ("time_collected", r"time\s+of\s+collection"),
     ("date_requested", r"date\s+requested"),
     ("time_requested", r"time\s+requested"),
     ("priority", r"\bpriority\b"),
     ("specimen_type", r"specimen\s+type"),
-    ("specimen_site", r"specimen\s+site"),
+    # "of collection" is an optional trailing phrase on the label itself —
+    # same leak-prevention reasoning as "hospital" above: without
+    # consuming it, "Specimen site of collection, Left arm vein" would
+    # capture "of collection, Left arm vein" as the value.
+    ("specimen_site", r"specimen\s+site(?:\s+of\s+collection)?"),
     ("reason_for_request", r"reason\s+for\s+request"),
     ("clinical_history", r"clinical\s+history"),
     ("provisional_diagnosis", r"provisional\s+diagnosis"),
@@ -79,8 +92,8 @@ _DEFERRED_TERMINOLOGY_FIELDS = {
     "tests_required", "clinical_history", "provisional_diagnosis", "medication",
 }
 
-_DATE_FIELDS = {"date_of_birth", "date_requested"}
-_TIME_FIELDS = {"time_requested"}
+_DATE_FIELDS = {"date_of_birth", "date_requested", "date_collected"}
+_TIME_FIELDS = {"time_requested", "time_collected"}
 
 _LOOKAHEAD = 25  # chars, for deciding whether a label match is "real"
 
