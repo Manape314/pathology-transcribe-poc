@@ -114,7 +114,7 @@
       <p class="dictation-guide-fields-label">Fields to dictate:</p>
       <ul class="dictation-guide-fields">
         <li>Specimen type</li>
-        <li>Specimen site of collection</li>
+        <li>Site of collection</li>
         <li>Date of collection</li>
         <li>Time of collection</li>
         <li>Reason for request</li>
@@ -154,34 +154,19 @@
         <h2>Transcript</h2>
         <div class="transcript-header-actions">
           <button id="toggleRawBtn" class="nav-btn" type="button">View raw transcript</button>
-          <button id="editTranscriptBtn" class="nav-btn" type="button">Edit transcript</button>
         </div>
       </div>
 
       <!-- Raw-view fallback (the untouched Whisper output) — hidden
            unless "View raw transcript" is active; the six blocks below
-           are the default view. -->
+           are the default (and only editable) view. -->
       <p id="transcript" class="transcript-text hidden">—</p>
 
-      <!-- Edit mode: free-text correction of the normalized transcript
-           (e.g. fixing a Whisper spelling mistake) before confirming.
-           Hidden unless editTranscriptBtn is pressed — see app.js's
-           enterEditMode()/saveTranscriptEdit()/cancelTranscriptEdit().
-           Saving re-parses the edited text through the SAME
-           field_extraction.py used by /transcribe (POST /extract-fields)
-           so the blocks below never go stale relative to a hand-typed
-           correction. -->
-      <textarea id="transcriptEditArea" class="transcript-edit-area hidden"></textarea>
-      <div id="transcriptEditActions" class="matches-actions hidden">
-        <button id="saveTranscriptEditBtn" class="primary-btn" type="button">Save edits</button>
-        <button id="cancelTranscriptEditBtn" class="nav-btn" type="button">Cancel</button>
-      </div>
-
-      <!-- Validation summary — recomputed after every transcription,
-           resolve, or edit. Lists exactly what's missing/unresolved;
-           never requires repeating the whole dictation to fix one gap
-           (use "Edit transcript" for that). See app.js's
-           getIncompleteFields()/refreshValidation(). -->
+      <!-- Validation summary — recomputed after every transcription and
+           every in-block field edit/resolve. Lists exactly what's
+           missing/unresolved; fixing it means editing the field directly
+           in its block below, never a separate re-parse step. See
+           app.js's getIncompleteFields()/refreshValidation(). -->
       <div id="incompleteBanner" class="incomplete-banner hidden" role="alert">
         <h3 class="incomplete-title">Request incomplete</h3>
         <p class="incomplete-hint">Missing or unresolved:</p>
@@ -189,9 +174,10 @@
       </div>
 
       <!-- Six review blocks, populated from the SAME structured result
-           /transcribe already returns — purely a different rendering of
-           existing data, not a different data shape. See app.js's
-           renderAllBlocks(). -->
+           /transcribe already returns. Every field renders as a LIVE,
+           directly-editable input/textarea — empty if never dictated,
+           editable in place if wrong — never a separate free-text
+           re-parse step. See app.js's renderAllBlocks()/renderBlockField(). -->
       <div id="blocksContainer" class="blocks-container">
         <div class="field-block">
           <h3 class="field-block-title">Specimen</h3>
@@ -209,7 +195,7 @@
         </div>
 
         <div class="field-block">
-          <h3 class="field-block-title">Clinical</h3>
+          <h3 class="field-block-title">Clinical history</h3>
           <dl id="blockClinical" class="field-list"></dl>
         </div>
 
@@ -223,6 +209,17 @@
           <section id="testsSection" class="matches hidden" aria-live="polite">
             <ul id="testsList" class="matches-list"></ul>
             <p id="testsEmpty" class="empty-msg hidden">No tests required were recognized.</p>
+
+            <!-- Always available — covers both "add a test that was never
+                 dictated at all" and sits alongside each unrecognized
+                 item's own inline-fix input (see app.js's renderTests()).
+                 Resolves via the same POST /normalize-test-item used for
+                 fixing an unrecognized item, then appends the result. -->
+            <div class="add-test-row">
+              <input type="text" id="addTestInput" class="add-test-input" placeholder="Add a test (e.g. FBC)" />
+              <button type="button" id="addTestBtn" class="nav-btn">+ Add</button>
+            </div>
+
             <div class="matches-actions">
               <button id="confirmTestsBtn" class="primary-btn" type="button">Confirm &amp; save</button>
               <button id="skipTestsBtn" class="nav-btn" type="button">Skip</button>
@@ -330,15 +327,25 @@
     </form>
   </main>
 
-  <!-- History screen — past transcriptions for the logged-in doctor. -->
+  <!-- History screen — this doctor's own FINALIZED/printed requests,
+       fetched from the server (GET /requests) so the same list shows up
+       on any device logged into the same account. See auth.js's
+       renderHistory(). -->
   <main id="historyScreen" class="app screen hidden">
     <header class="sub-header">
       <button id="historyBackBtn" class="back-btn" type="button">&larr; Back</button>
       <h1>History</h1>
     </header>
 
+    <input
+      type="search"
+      id="historySearchInput"
+      class="history-search-input"
+      placeholder="Search your requests..."
+    />
+
     <ul id="historyList" class="history-list"></ul>
-    <p id="historyEmpty" class="empty-msg hidden">No transcriptions yet.</p>
+    <p id="historyEmpty" class="empty-msg hidden">No finalized requests yet.</p>
   </main>
 
   <script src="config.js"></script>

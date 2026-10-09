@@ -1,13 +1,14 @@
 """
 Pathology dictation POC — backend.
 
-Accepts an uploaded audio file, runs faster-whisper on it (on the SERVER),
-then runs field_extraction.py to turn the transcript into a structured
-pathology request (dates/times deterministically normalized via
-datetime_normalize.py, "tests required" resolved to canonical NHLS/LOINC
-names via terminology_normalize.py) and a clinician-facing reconstructed
-transcript. Transcription itself is stateless — nothing from /transcribe
-is stored server-side.
+Accepts an uploaded audio file, sends it to Groq's hosted
+whisper-large-v3-turbo for transcription (see transcription.py — the one
+module that knows anything about Groq), then runs field_extraction.py to
+turn the transcript into a structured pathology request (dates/times
+deterministically normalized via datetime_normalize.py, "tests required"
+resolved to canonical NHLS/LOINC names via terminology_normalize.py) and a
+clinician-facing reconstructed transcript. Transcription itself is
+stateless — nothing from /transcribe is stored server-side.
 
 The one deliberate exception is /print-label: once a doctor finalizes a
 request, its confirmed transcript IS stored centrally (see
@@ -33,8 +34,9 @@ just by convention.
 Run it with:
     uvicorn main:app --host 0.0.0.0 --port 8000
 
-The model choice, device, and compute type are all set via environment variables
-so the SAME code runs on a plain laptop CPU and on a GPU machine.
+Transcription runs on Groq's hosted infrastructure (see transcription.py),
+not in this process — this server never loads a speech model into its own
+RAM, which is what keeps it light enough to run on a free hosted tier.
 """
 
 import os
@@ -44,61 +46,24 @@ import tempfile
 
 from fastapi import Depends, FastAPI, File, Header, HTTPException, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from faster_whisper import WhisperModel
 from pydantic import BaseModel
 from sqlalchemy.exc import IntegrityError, OperationalError
 
+import clinical_terminology
 import datetime_normalize
+import doctors
 import field_extraction
 import label_printing
 import matching
 import print_jobs
 import print_records
 import specimen_mapping
-
-# --------------------------------------------------------------------------- #
-# Configuration (all overridable via environment variables)
-# --------------------------------------------------------------------------- #
-# WHISPER_MODEL : which model to load. "large-v3" is the most accurate but the
-#                 slowest. On a CPU-only laptop you may want "small" or "medium"
-#                 while developing, then switch to "large-v3" on a GPU box.
-# DEVICE        : "cpu" (default) or "cuda" (needs an NVIDIA GPU + CUDA libs).
-# COMPUTE_TYPE  : the numeric precision CTranslate2 uses.
-#                 - "int8"    -> best for CPU (small + reasonably fast)
-#                 - "float16" -> best for GPU (fast + accurate)
-#                 If you don't set it, we pick a sensible default from DEVICE.
-WHISPER_MODEL = os.getenv("WHISPER_MODEL", "large-v3")
-DEVICE = os.getenv("DEVICE", "cpu")
-
-# Default the compute type off the device unless the user overrode it explicitly.
-_default_compute_type = "float16" if DEVICE == "cuda" else "int8"
-COMPUTE_TYPE = os.getenv("COMPUTE_TYPE", _default_compute_type)
-
-# --------------------------------------------------------------------------- #
-# Medical vocabulary bias
-# --------------------------------------------------------------------------- #
-# Whisper accepts an "initial_prompt": a short bit of text that primes the model
-# toward the words/spelling you expect. It does NOT restrict what can be
-# transcribed — it just nudges ambiguous audio toward these terms. Edit this
-# freely to match the tests and specimen types you dictate most often.
-MEDICAL_PROMPT = (
-    "Pathology request. Full blood count, urea and electrolytes, creatinine, "
-    "C-reactive protein, HbA1c, haematocrit, EDTA tube, serum separator tube, "
-    "cerebrospinal fluid, D-dimer."
-)
-
-# --------------------------------------------------------------------------- #
-# Load the model ONCE at startup.
-# --------------------------------------------------------------------------- #
-# Loading is expensive, so we do it a single time when the process starts, not
-# on every request. The first run for a given model also downloads the weights
-# from Hugging Face and caches them (default: ~/.cache/huggingface).
-print(f"Loading Whisper model '{WHISPER_MODEL}' on {DEVICE} ({COMPUTE_TYPE})...")
-model = WhisperModel(WHISPER_MODEL, device=DEVICE, compute_type=COMPUTE_TYPE)
-print("Model loaded. Ready.")
+import terminology_normalize
+import transcription
 
 print_records.init_db()
 print_jobs.init_db()
+doctors.init_db()
 
 # --------------------------------------------------------------------------- #
 # FastAPI app
@@ -132,9 +97,9 @@ def health():
     """Quick health/config check — open this in a browser to confirm it's up."""
     return {
         "status": "ok",
-        "model": WHISPER_MODEL,
-        "device": DEVICE,
-        "compute_type": COMPUTE_TYPE,
+        "transcription_provider": "groq",
+        "transcription_model": transcription.GROQ_WHISPER_MODEL,
+        "groq_api_key_configured": bool(os.getenv("GROQ_API_KEY")),
         "terminology_loaded": matching._READY,
         "printer_connection": label_printing.PRINTER_CONNECTION,
     }
@@ -269,6 +234,101 @@ def require_agent_token(authorization: str = Header(default="")) -> None:
         raise HTTPException(status_code=401, detail="Invalid or missing agent token")
 
 
+# --------------------------------------------------------------------------- #
+# Doctor accounts — what makes "log in with the same HPCSA number and
+# password on a different device" possible (see doctors.py). Unlike
+# require_agent_token above (one static shared secret), each doctor's
+# token is issued at login/register and looked up per-request.
+# --------------------------------------------------------------------------- #
+
+
+def require_doctor_token(authorization: str = Header(default="")) -> dict:
+    token = authorization.removeprefix("Bearer ").strip()
+    doctor = doctors.get_doctor_by_token(token) if token else None
+    if doctor is None:
+        raise HTTPException(status_code=401, detail="Invalid or missing session token")
+    return doctor
+
+
+class RegisterRequest(BaseModel):
+    name: str
+    hpcsa_number: str
+    cell: str
+    email: str
+    password: str
+
+
+@app.post("/register", status_code=201)
+def register(body: RegisterRequest):
+    try:
+        doctor = doctors.create_doctor(body.name, body.hpcsa_number, body.cell, body.email, body.password)
+    except IntegrityError:
+        raise HTTPException(
+            status_code=409,
+            detail="This HPCSA number is already registered.",
+        )
+    token = doctors.issue_session_token(doctor["hpcsa_number"])
+    return {"token": token, "doctor": doctor}
+
+
+class LoginRequest(BaseModel):
+    hpcsa_number: str
+    password: str
+
+
+@app.post("/login")
+def login(body: LoginRequest):
+    # Generic error either way — never reveal which field was wrong, same
+    # UX the frontend already had when this check was purely local.
+    doctor = doctors.verify_password(body.hpcsa_number, body.password)
+    if doctor is None:
+        raise HTTPException(status_code=401, detail="Incorrect HPCSA number or password.")
+    token = doctors.issue_session_token(doctor["hpcsa_number"])
+    return {"token": token, "doctor": doctor}
+
+
+class UpdateProfileRequest(BaseModel):
+    name: str
+    cell: str
+    email: str
+
+
+@app.put("/profile")
+def update_profile(body: UpdateProfileRequest, doctor: dict = Depends(require_doctor_token)):
+    return {"doctor": doctors.update_profile(doctor["hpcsa_number"], body.name, body.cell, body.email)}
+
+
+class UpdatePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+
+@app.put("/password")
+def update_password(body: UpdatePasswordRequest, doctor: dict = Depends(require_doctor_token)):
+    ok = doctors.update_password(doctor["hpcsa_number"], body.current_password, body.new_password)
+    if not ok:
+        raise HTTPException(status_code=401, detail="Current password is incorrect.")
+    return {"status": "ok"}
+
+
+@app.get("/me")
+def me(doctor: dict = Depends(require_doctor_token)):
+    """Resolves the stored session token back to a doctor profile —
+    called on page load to resume a session now that there's nothing
+    left to resume FROM locally (the token is the only thing the client
+    still holds; everything else needs confirming server-side)."""
+    return {"doctor": doctor}
+
+
+@app.get("/requests")
+def list_requests(doctor: dict = Depends(require_doctor_token)):
+    """Backs the History screen — only requests THIS doctor has finalized
+    via "Done — Print label" (see print_records.get_records_for_doctor's
+    docstring for why there's no separate store of in-progress/abandoned
+    dictations to list here)."""
+    return {"requests": print_records.get_records_for_doctor(doctor["hpcsa_number"])}
+
+
 class ClaimJobRequest(BaseModel):
     station_id: str
 
@@ -357,30 +417,83 @@ class NormalizeTimeRequest(BaseModel):
 @app.post("/normalize-time")
 def normalize_time_endpoint(body: NormalizeTimeRequest):
     """Thin wrapper around datetime_normalize.normalize_time() — called by
-    the frontend's AM/PM quick-pick (app.js) when the doctor resolves a
-    time that was dictated without am/pm (e.g. "10:30" -> "10:30 AM").
-    Keeps normalize_time() as the one source of truth for what counts as
-    a valid time, rather than duplicating that parsing in JavaScript."""
+    the frontend's inline time-field editor (app.js) whenever a time_*
+    field is typed/edited directly in its block, including the one-click
+    AM/PM quick-pick. Keeps normalize_time() as the one source of truth
+    for what counts as a valid time, rather than duplicating that parsing
+    in JavaScript."""
     value, status = datetime_normalize.normalize_time(body.raw)
     return {"value": value, "status": status}
 
 
-class ExtractFieldsRequest(BaseModel):
-    text: str
+class NormalizeDateRequest(BaseModel):
+    raw: str
 
 
-@app.post("/extract-fields")
-def extract_fields_endpoint(body: ExtractFieldsRequest):
-    """Thin wrapper around field_extraction.extract_fields() +
-    build_normalized_text() — re-parses doctor-edited text (app.js's
-    saveTranscriptEdit()) so the structured six-block view stays in sync
-    with whatever the doctor just typed, rather than going stale the
-    moment free-text editing touches a field the blocks read directly.
-    No audio/Whisper involved — pure text in, structured fields out,
-    same extraction this already runs once inside /transcribe."""
-    structured = field_extraction.extract_fields(body.text)
-    normalized_text = field_extraction.build_normalized_text(structured)
-    return {"structured": structured, "normalized_text": normalized_text or body.text}
+@app.post("/normalize-date")
+def normalize_date_endpoint(body: NormalizeDateRequest):
+    """Thin wrapper around datetime_normalize.normalize_date() — the date
+    counterpart to /normalize-time above, called by the frontend's inline
+    date-field editor (date_of_birth/date_requested/date_collected)
+    whenever one is typed/edited directly in its block."""
+    value, status = datetime_normalize.normalize_date(body.raw)
+    return {"value": value, "status": status}
+
+
+class ResolveClinicalFieldRequest(BaseModel):
+    field_key: str
+    raw_text: str
+    structured: dict = {}
+
+
+_CLINICAL_FIELD_DICTS = {
+    "clinical_history": clinical_terminology.CLINICAL_ABBREVIATIONS,
+    "provisional_diagnosis": clinical_terminology.CLINICAL_ABBREVIATIONS,
+    "medication": clinical_terminology.MEDICATION_ABBREVIATIONS,
+}
+
+
+@app.post("/resolve-clinical-field")
+def resolve_clinical_field_endpoint(body: ResolveClinicalFieldRequest):
+    """Thin wrapper around clinical_terminology.resolve_field_text() —
+    called by the frontend's inline editor for clinical_history/
+    provisional_diagnosis/medication, re-resolving ONLY the one edited
+    field (abbreviation expansion + ambiguous-term flagging) from its own
+    raw text, rather than re-parsing the whole transcript. Dispatches the
+    same unambiguous_dict per field_key that field_extraction.py's own
+    second pass already uses — one definition, reused here, not
+    duplicated."""
+    unambiguous_dict = _CLINICAL_FIELD_DICTS.get(body.field_key)
+    if unambiguous_dict is None:
+        raise HTTPException(status_code=400, detail=f"Unknown clinical field: {body.field_key}")
+    result = clinical_terminology.resolve_field_text(
+        body.raw_text, body.field_key, unambiguous_dict, context=body.structured
+    )
+    return {"field": result}
+
+
+class NormalizeTestItemRequest(BaseModel):
+    raw: str
+    structured: dict = {}
+
+
+@app.post("/normalize-test-item")
+def normalize_test_item_endpoint(body: NormalizeTestItemRequest):
+    """Thin wrapper around terminology_normalize.normalize_tests_required()
+    for exactly ONE test name — called by the frontend's inline fix for an
+    unrecognized/mistyped test, and by "+ Add test", so a single test can
+    be (re)resolved without touching any other already-confirmed item in
+    tests_required. Reuses normalize_tests_required() (not the lower-level
+    normalize_test_item() directly) so context-based ambiguous-candidate
+    ranking is computed identically to how a fresh dictation's
+    tests_required gets it."""
+    raw = body.raw.strip()
+    if not raw:
+        raise HTTPException(status_code=400, detail="raw must not be empty")
+    items = terminology_normalize.normalize_tests_required(raw, context=body.structured)
+    if not items:
+        raise HTTPException(status_code=400, detail="raw did not contain a recognizable test name")
+    return {"item": items[0]}
 
 
 class RebuildTranscriptRequest(BaseModel):
@@ -400,48 +513,41 @@ def rebuild_transcript_endpoint(body: RebuildTranscriptRequest):
 @app.post("/transcribe")
 async def transcribe(file: UploadFile = File(...)):
     """
-    Accept a multipart/form-data upload (field name: "file"), transcribe it,
-    and return the text.
+    Accept a multipart/form-data upload (field name: "file"), transcribe it
+    via Groq's hosted whisper-large-v3-turbo (transcription.py), and return
+    the text.
 
-    The browser's MediaRecorder produces WebM/Opus. We don't decode it by hand —
-    faster-whisper reads the file via PyAV (which bundles the FFmpeg libraries),
-    so WebM/Opus, MP4/AAC, WAV, etc. all just work. See the README note on
-    FFmpeg if you hit a decoding error.
+    The browser's MediaRecorder produces WebM/Opus (Chrome/Firefox/Android)
+    or MP4/AAC (iOS Safari) — Groq's API accepts both formats directly, so
+    no conversion step is needed here; the uploaded bytes are sent through
+    unchanged.
     """
-    # Preserve the original extension so the decoder can sniff the format.
+    # Preserve the original extension so Groq can sniff the format.
     suffix = os.path.splitext(file.filename or "")[1] or ".webm"
 
-    # Write the upload to a temp file on disk. faster-whisper takes a path (or a
-    # file-like object); a temp path is the simplest, most robust route.
+    # Write the upload to a temp file on disk — transcription.transcribe_audio()
+    # takes a path; a temp file is the simplest, most robust route (same
+    # pattern as before this migration).
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
         tmp.write(await file.read())
         tmp_path = tmp.name
 
     try:
-        # transcribe() returns:
-        #   segments -> a LAZY generator of Segment objects (start, end, text, ...)
-        #   info     -> metadata (detected language, probability, audio duration)
-        #
-        # vad_filter=True runs Silero VAD first to strip silence. This is the
-        # single most effective switch for stopping Whisper from "hallucinating"
-        # phantom words during quiet gaps.
-        segments, info = model.transcribe(
-            tmp_path,
-            vad_filter=True,
-            initial_prompt=MEDICAL_PROMPT,
-        )
-
-        # The generator only does work as we iterate it — this loop is where the
-        # actual transcription happens.
-        seg_list = []
-        text_parts = []
-        for seg in segments:
-            seg_list.append(
-                {"start": seg.start, "end": seg.end, "text": seg.text}
-            )
-            text_parts.append(seg.text)
-
-        raw_text = "".join(text_parts).strip()
+        try:
+            raw_text, language, duration, seg_list = transcription.transcribe_audio(tmp_path)
+        except transcription.TranscriptionError as exc:
+            # Never leak the underlying cause (missing/invalid key, Groq's
+            # own error text, a network failure) to the browser — log it
+            # server-side and give the doctor one generic, retryable
+            # message instead. No automatic retry here: the doctor
+            # pressing Record again IS the retry, which costs exactly one
+            # more request rather than an unbounded loop silently
+            # spending free-tier quota during a sustained outage.
+            print(f"transcription: Groq request failed ({exc})")
+            raise HTTPException(
+                status_code=503,
+                detail="Transcription is temporarily unavailable. Please try again.",
+            ) from exc
 
         # Field extraction (and, inside it, terminology/date-time
         # normalization) is additive — a bug or edge case here must never
@@ -464,8 +570,8 @@ async def transcribe(file: UploadFile = File(...)):
             "raw_text": raw_text,
             "normalized_text": normalized_text or raw_text,
             "segments": seg_list,
-            "language": info.language,
-            "duration": info.duration,
+            "language": language,
+            "duration": duration,
             "structured": structured,
         }
     finally:

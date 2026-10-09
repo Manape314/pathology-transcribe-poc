@@ -12,6 +12,30 @@ def test_split_test_items_protects_u_and_e():
     assert items == ["FBC", "CRP", "U and E", "Blood culture"]
 
 
+def test_split_test_items_strips_stale_unrecognized_marker():
+    # Regression lock: build_normalized_text() renders an unresolved item
+    # as "{raw} [unrecognized]"/"{raw} [ambiguous — please confirm]" — a
+    # doctor fixing a typo via "Edit transcript" plausibly leaves that
+    # marker in place (it looks like part of the display), which must not
+    # make the corrected name permanently unmatchable.
+    assert split_test_items("FBC [unrecognized].") == ["FBC"]
+    assert split_test_items("TB [ambiguous — please confirm].") == ["TB"]
+
+    # Stacked markers (from more than one prior edit/save round) are
+    # fully cleaned in one pass, not just the outermost layer.
+    assert split_test_items("FBC [unrecognized] [unrecognized] [unrecognized].") == ["FBC"]
+
+
+def test_normalize_tests_required_resolves_fixed_abbreviation_with_stale_marker():
+    # Through the real normalize_tests_required() entry point: the typo
+    # fix actually takes effect instead of silently staying "unrecognized".
+    result = normalize_tests_required("FBC [unrecognized]")
+    assert len(result) == 1
+    assert result[0]["raw"] == "FBC"
+    assert result[0]["status"] == "confirmed"
+    assert result[0]["normalized"] == "Full Blood Count"
+
+
 @pytest.mark.parametrize(
     "raw, expected_normalized",
     [
@@ -429,6 +453,48 @@ def test_normalize_tests_required_with_ambiguous_item_mixed_in():
     assert by_raw["FBC"]["status"] == "confirmed"
     assert by_raw["TB"]["status"] == "ambiguous"
     assert len(by_raw["TB"]["candidates"]) == 2
+
+
+# --------------------------------------------------------------------------- #
+# Round-trip stability for confirmed items reconstructed as
+# "{canonical name} ({raw})" (field_extraction._format_test_item) — e.g.
+# after "Edit transcript" re-parses the displayed transcript text.
+# fuzz.token_set_ratio (the fuzzy fallback's scorer) is deliberately blind
+# to word repetition, so without _peel_trailing_parenthetical(), this kind
+# of self-referential text would keep fuzzy-matching successfully and
+# getting wrapped in another layer on every single save.
+# --------------------------------------------------------------------------- #
+
+
+def test_single_level_confirmed_round_trip_is_stable():
+    result = normalize_test_item("Full Blood Count (FBC)")
+    assert result["status"] == "confirmed"
+    assert result["normalized"] == "Full Blood Count"
+    # The original (noisy) text is preserved as `raw` for traceability —
+    # only the MATCH TARGET changes, not what's reported as heard.
+    assert result["raw"] == "Full Blood Count (FBC)"
+
+
+def test_deeply_nested_confirmed_round_trip_does_not_compound_further():
+    # Simulates several Edit/Save cycles in a row — each round wraps the
+    # previous round's reconstruction in one more layer. Before this fix,
+    # every round added a fresh layer indefinitely; after it, each round
+    # stably re-resolves to the same canonical name with no growth.
+    nested = "Bilirubin (total) (Bilirubin (total) (Total Bilirubin (TB)))"
+    result = normalize_test_item(nested)
+    assert result["status"] == "confirmed"
+    assert result["normalized"] == "Bilirubin (total)"
+
+
+def test_genuine_canonical_name_with_parentheses_is_unaffected():
+    # A real NHLS/LOINC name that legitimately contains parentheses must
+    # match on its own merits (step E, exact match) and never be peeled —
+    # peeling only ever triggers once the FULL string already failed to
+    # match deterministically.
+    result = normalize_test_item("Bilirubin (total)")
+    assert result["status"] == "confirmed"
+    assert result["normalized"] == "Bilirubin (total)"
+    assert result["match_type"] == "canonical_match"
 
 
 # --------------------------------------------------------------------------- #

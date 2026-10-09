@@ -221,6 +221,25 @@ h1 {
 
 /* ---- History list ---- */
 
+.history-search-input {
+  display: block;
+  width: 100%;
+  margin: 0 0 1rem;
+  padding: 0.55rem 0.75rem;
+  font: inherit;
+  font-size: 0.9rem;
+  color: var(--text);
+  background: var(--card);
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  box-sizing: border-box;
+}
+
+.history-search-input:focus {
+  outline: 2px solid var(--teal);
+  outline-offset: 1px;
+}
+
 .history-list {
   list-style: none;
   margin: 0;
@@ -249,21 +268,6 @@ h1 {
 .history-timestamp {
   font-size: 0.8rem;
   color: var(--muted);
-}
-
-.history-delete {
-  flex-shrink: 0;
-  padding: 0.3rem 0.6rem;
-  border: 1px solid #fecaca;
-  border-radius: 6px;
-  background: #fff;
-  color: var(--red);
-  font-size: 0.75rem;
-  cursor: pointer;
-}
-
-.history-delete:hover {
-  background: #fef2f2;
 }
 
 .history-text {
@@ -314,6 +318,31 @@ h1 {
 .match-item input[type="checkbox"] {
   margin-top: 0.2rem;
   flex-shrink: 0;
+}
+
+/* Removes this one test entirely — available regardless of status
+   (confirmed/ambiguous/unrecognized), e.g. a garbled phrase misheard as
+   a test name. */
+.remove-test-btn {
+  flex-shrink: 0;
+  width: 1.75rem;
+  height: 1.75rem;
+  margin: 0;
+  padding: 0;
+  border: 1px solid #e2e8f0;
+  border-radius: 50%;
+  background: #fff;
+  color: var(--muted);
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.remove-test-btn:hover,
+.remove-test-btn:focus {
+  border-color: var(--red);
+  color: var(--red);
+  outline: none;
 }
 
 .match-item.unrecognized {
@@ -540,41 +569,9 @@ h1 {
   white-space: pre-wrap;
 }
 
-.transcript-edit-area {
-  width: 100%;
-  min-height: 8rem;
-  margin: 0;
-  padding: 0.6rem 0.75rem;
-  font: inherit;
-  line-height: 1.5;
-  color: var(--text);
-  background: var(--bg);
-  border: 1px solid #e2e8f0;
-  border-radius: 10px;
-  resize: vertical;
-  box-sizing: border-box;
-}
-
-.transcript-edit-area:focus {
-  outline: 2px solid var(--teal);
-  outline-offset: 1px;
-}
-
-/* ---- Inline ambiguous-term highlighting + click-to-choose popup ---- */
-
-.ambiguous-highlight {
-  background: #fef3c7;
-  border-bottom: 2px dotted #b45309;
-  border-radius: 3px;
-  padding: 0 0.1rem;
-  cursor: pointer;
-}
-
-.ambiguous-highlight:hover,
-.ambiguous-highlight:focus {
-  background: #fde68a;
-  outline: none;
-}
+/* ---- Click-to-choose popup for an ambiguous term (opened from a chip —
+   see .ambiguous-resolve-btn / .ambiguous-chip-list below, and the
+   equivalent button in the Tests required panel) ---- */
 
 .ambiguous-popup {
   position: fixed;
@@ -907,9 +904,55 @@ h1 {
   line-height: 1.4;
 }
 
-.field-unconfirmed {
-  color: #b45309;
+/* ---- Live, directly-editable field inputs — every block field renders
+   one of these (never static text), so fixing a typo or filling a
+   missing value happens right in the block, not in a separate box. ---- */
+
+.field-input,
+.field-textarea {
+  width: 100%;
+  margin: 0;
+  padding: 0.45rem 0.6rem;
+  font: inherit;
+  font-size: 0.9rem;
+  line-height: 1.4;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  box-sizing: border-box;
+}
+
+.field-textarea {
+  min-height: 4.5rem;
+  line-height: 1.5;
+  resize: vertical;
+}
+
+.field-input:focus,
+.field-textarea:focus {
+  outline: 2px solid var(--teal);
+  outline-offset: 1px;
+}
+
+.field-input::placeholder,
+.field-textarea::placeholder {
+  color: var(--muted);
   font-style: italic;
+}
+
+/* A time/date field with a raw value that hasn't been confirmed yet
+   (e.g. missing am/pm) — same amber signal the AM/PM quick-pick uses. */
+.field-input-unconfirmed {
+  border-color: #fde68a;
+  background: #fffbeb;
+}
+
+.ambiguous-chip-list {
+  margin-top: 0.4rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
 }
 
 /* ---- "Request incomplete" validation banner ---- */
@@ -971,10 +1014,9 @@ h1 {
   background: var(--bg);
 }
 
-/* ---- Ambiguous test-abbreviation resolve button (Tests required
-   panel) — same pill look as .ambiguous-highlight, but a real <button>
-   rather than an inline text span since it no longer lives inside any
-   paragraph. ---- */
+/* ---- Ambiguous-term resolve chip — shown next to a clinical block field
+   or a Tests required item that has an unresolved ambiguous abbreviation;
+   opens the same candidate-choice popup either way. ---- */
 
 .ambiguous-resolve-btn {
   display: inline-block;
@@ -987,12 +1029,44 @@ h1 {
   font-size: 0.8rem;
   color: #92400e;
   cursor: pointer;
+  text-align: left;
 }
 
 .ambiguous-resolve-btn:hover,
 .ambiguous-resolve-btn:focus {
   background: #fde68a;
   outline: none;
+}
+
+/* ---- Tests required: fixing an unrecognized item inline, and adding a
+   test that was never dictated at all. ---- */
+
+.unrecognized-fix-row {
+  margin-top: 0.4rem;
+}
+
+.add-test-row {
+  display: flex;
+  gap: 0.5rem;
+  margin: 0.75rem 0;
+}
+
+.add-test-input {
+  flex: 1;
+  margin: 0;
+  padding: 0.45rem 0.6rem;
+  font: inherit;
+  font-size: 0.9rem;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  box-sizing: border-box;
+}
+
+.add-test-input:focus {
+  outline: 2px solid var(--teal);
+  outline-offset: 1px;
 }
 
 /* ---- Specimen/container requirements confirmation (Block 5) — the

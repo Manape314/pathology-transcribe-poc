@@ -3,16 +3,19 @@ Integration test through the REAL POST /transcribe route (the same
 endpoint the frontend calls) — not just the extraction/normalization
 functions in isolation.
 
-Whisper's actual speech-recognition step is monkeypatched to return a
-canned transcript, since speech-recognition accuracy isn't what's being
-tested here; importing `main` still triggers one real (cached) Whisper
-model load, and every line of the new field-extraction/normalization code
-runs for real through the actual FastAPI route handler.
+transcription.transcribe_audio() (the one function that talks to Groq) is
+monkeypatched to return a canned transcript, since speech-recognition
+accuracy isn't what's being tested here and these tests must never make a
+real Groq API call, require GROQ_API_KEY, or consume free-tier quota.
+Every line of the field-extraction/normalization code still runs for real
+through the actual FastAPI route handler.
 """
 
+import pytest
 from fastapi.testclient import TestClient
 
 import main
+import transcription
 
 TRANSCRIPT = (
     "Patient name, Gabelo Mukwena. Patient ID, 2026-00482. Date of birth, "
@@ -30,23 +33,11 @@ TRANSCRIPT = (
 )
 
 
-class _FakeSegment:
-    def __init__(self, text):
-        self.start = 0.0
-        self.end = 10.0
-        self.text = text
-
-
-class _FakeInfo:
-    language = "en"
-    duration = 10.0
-
-
 def _transcribe_with(monkeypatch, text):
-    def fake_transcribe(path, **kwargs):
-        return [_FakeSegment(text)], _FakeInfo()
+    def fake_transcribe_audio(path):
+        return text, "en", 10.0, [{"start": 0.0, "end": 10.0, "text": text}]
 
-    monkeypatch.setattr(main.model, "transcribe", fake_transcribe)
+    monkeypatch.setattr(transcription, "transcribe_audio", fake_transcribe_audio)
     return TestClient(main.app)
 
 
@@ -75,7 +66,7 @@ def test_transcribe_endpoint_raw_vs_normalized_and_structured(monkeypatch):
     assert "C-reactive protein (CRP)" in normalized_text
     assert "Urea and Electrolytes (U and E)" in normalized_text
     assert "2026-09-22" in normalized_text
-    assert "14:35" in normalized_text
+    assert "2:35 PM" in normalized_text
 
     structured = data["structured"]
 
@@ -183,3 +174,45 @@ def test_transcribe_endpoint_empty_text_has_empty_structured(monkeypatch):
     assert data["raw_text"] == ""
     assert data["normalized_text"] == ""
     assert data["structured"]["unparsed_text"] == []
+
+
+# --------------------------------------------------------------------------- #
+# Error handling — whatever goes wrong inside transcription.py (missing key,
+# Groq timeout/429/5xx, network failure), /transcribe must map it to ONE
+# generic, retryable, client-safe message, never the underlying cause.
+# --------------------------------------------------------------------------- #
+
+def test_transcribe_endpoint_maps_transcription_error_to_safe_503(monkeypatch):
+    def fake_transcribe_audio(path):
+        # Stands in for any of transcription.py's real failure modes —
+        # missing key, Groq rate limit, Groq 5xx, a network timeout — they
+        # all raise this same TranscriptionError type.
+        raise transcription.TranscriptionError("Groq rate limit exceeded.")
+
+    monkeypatch.setattr(transcription, "transcribe_audio", fake_transcribe_audio)
+    client = TestClient(main.app)
+    response = client.post(
+        "/transcribe",
+        files={"file": ("recording.webm", b"fake-audio-bytes", "audio/webm")},
+    )
+
+    assert response.status_code == 503
+    body = response.json()
+    assert body["detail"] == "Transcription is temporarily unavailable. Please try again."
+    # The real cause must never reach the client-facing response.
+    assert "rate limit" not in body["detail"].lower()
+    assert "groq" not in body["detail"].lower()
+
+
+def test_transcribe_audio_without_api_key_raises_before_any_network_call(monkeypatch):
+    # transcription.py in isolation (not through the endpoint): a missing
+    # GROQ_API_KEY must fail with the module's own TranscriptionError
+    # BEFORE constructing a client or attempting any network call — this
+    # is also what guarantees every OTHER test file that merely imports
+    # main (print jobs, time normalization, ...) never needs
+    # GROQ_API_KEY set and never makes a network call just by importing it.
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    monkeypatch.setattr(transcription, "_client", None)
+
+    with pytest.raises(transcription.TranscriptionError, match="GROQ_API_KEY"):
+        transcription.transcribe_audio("irrelevant-path.webm")

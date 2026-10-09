@@ -167,7 +167,7 @@ async function runLookup(requestId) {
   lookupStatus.textContent = "Looking up…";
 
   try {
-    const res = await fetch(`${BACKEND_URL}/print-lookup/${encodeURIComponent(requestId)}`);
+    const res = await backendFetch(`/print-lookup/${encodeURIComponent(requestId)}`);
 
     if (res.status === 400) {
       lookupStatus.textContent = `"${requestId}" doesn't look like a valid request ID.`;

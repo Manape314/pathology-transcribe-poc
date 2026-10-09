@@ -228,7 +228,7 @@ def extract_fields(transcript: str) -> dict:
         result["unparsed_text"] = unparsed
         return result
 
-    leading = text[: matches[0][0]].strip(" .,")
+    leading = text[: matches[0][0]].strip(" .,:")
     if leading:
         unparsed.append(leading)
 
@@ -242,10 +242,16 @@ def extract_fields(transcript: str) -> dict:
             sentence_end = _find_sentence_end(text, value_start, next_start)
             value_end = next_start if sentence_end == -1 else min(next_start, sentence_end)
 
-        raw_value = text[value_start:value_end].strip(" ,.")
+        # Strips a leading ":" as well as the original " ,." set — a label
+        # recognized via its own colon (e.g. "Specimen type: blood.", or
+        # "Hospital or clinic name: Greenside Clinic.") must not leave that
+        # colon sitting at the front of the extracted value; _is_real_label()
+        # already accepts a colon as a valid label/value separator, so the
+        # value side must consistently strip it too.
+        raw_value = text[value_start:value_end].strip(" ,.:")
         _store_field(result, field_key, raw_value)
 
-        gap_text = text[value_end:next_start].strip(" .,")
+        gap_text = text[value_end:next_start].strip(" .,:")
         if gap_text:
             unparsed.append(gap_text)
 
@@ -305,8 +311,13 @@ _DISPLAY_FIELDS = [
     ("specimen_type", "Specimen type"),
     ("specimen_site", "Specimen site"),
     ("reason_for_request", "Reason for request"),
-    ("date_collected", "Date collected"),
-    ("time_collected", "Time collected"),
+    # Matches the actual parseable label wording (_LABEL_DEFS: "date of
+    # collection"/"time of collection") — not just any human-readable
+    # label, so the displayed transcript stays consistent with what the
+    # dictation guide tells the doctor to say and what /transcribe
+    # actually recognizes.
+    ("date_collected", "Date of collection"),
+    ("time_collected", "Time of collection"),
     ("clinical_history", "Clinical history"),
     ("provisional_diagnosis", "Provisional diagnosis"),
     ("tests_required", "Tests required"),
@@ -336,6 +347,22 @@ def _format_test_item(item: dict) -> str:
     return f"{item['raw']} [unrecognized]"
 
 
+def _to_12h_ampm(value_24h: str) -> str:
+    """Converts a confirmed 24-hour "HH:MM" value back into a human "H:MM
+    AM/PM" string — unambiguously re-parseable through the same
+    datetime_normalize.normalize_time() pattern an original spoken AM/PM
+    time already goes through. Without this, a confirmed time embedded as
+    bare 24-hour digits (e.g. "10:30") is indistinguishable from a FRESH,
+    genuinely ambiguous dictation missing its AM/PM marker — re-parsing it
+    (e.g. after "Edit transcript") would silently demote an
+    already-confirmed time back to "ambiguous", forcing the doctor to
+    re-resolve AM/PM on every single save."""
+    hour, minute = (int(part) for part in value_24h.split(":"))
+    ampm = "AM" if hour < 12 else "PM"
+    hour12 = hour % 12 or 12
+    return f"{hour12}:{minute:02d} {ampm}"
+
+
 def build_normalized_text(structured: dict) -> str:
     lines: list[str] = []
 
@@ -354,7 +381,8 @@ def build_normalized_text(structured: dict) -> str:
             value = structured.get(field_key)
             status = structured.get(f"{field_key}_status")
             if status == "confirmed" and value:
-                lines.append(f"{label}: {value}")
+                display_value = _to_12h_ampm(value) if field_key in _TIME_FIELDS else value
+                lines.append(f"{label}: {display_value}")
             else:
                 raw = structured.get(f"{field_key}_raw", "")
                 lines.append(f"{label}: {raw} [unconfirmed — please verify]")

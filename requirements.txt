@@ -5,9 +5,11 @@ uvicorn[standard]>=0.29
 # Required by FastAPI to parse multipart/form-data file uploads
 python-multipart>=0.0.9
 
-# Whisper inference via CTranslate2. Pulls in ctranslate2, tokenizers,
-# onnxruntime (used by the Silero VAD filter), and av (PyAV) for decoding.
-faster-whisper>=1.0.0
+# Speech-to-text via Groq's hosted whisper-large-v3-turbo (see
+# backend/transcription.py) — this server never loads a speech model into
+# its own process, which is what keeps it light enough for a free hosted
+# tier. Requires GROQ_API_KEY to be set (server-side only).
+groq>=0.11.0
 
 # Fuzzy string matching of individual "tests required" items against the
 # NHLS/LOINC controlled vocabularies (see backend/matching.py and

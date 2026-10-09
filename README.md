@@ -1,47 +1,65 @@
 # Smart Pathology Request
 
 A proof of concept: a clinician logs in, records a spoken pathology request on
-a phone, the audio is sent to a server, [faster-whisper](https://github.com/SYSTRAN/faster-whisper)
-transcribes it, and a clinician-facing **normalized transcript** comes back —
-dates/times converted to unambiguous values, test abbreviations (FBC, CRP,
-U&E, ...) expanded to their canonical names — for the clinician to review and
-confirm. The untouched raw transcript is always kept alongside it.
+a phone, the audio is sent to a server, which sends it to
+[Groq's hosted speech-to-text API](https://console.groq.com/docs/speech-to-text)
+(`whisper-large-v3-turbo`) for transcription, and a clinician-facing
+**normalized transcript** comes back — dates/times converted to unambiguous
+values, test abbreviations (FBC, CRP, U&E, ...) expanded to their canonical
+names — for the clinician to review and confirm. The untouched raw transcript
+is always kept alongside it.
 
-No SNOMED CT yet (see "Out of scope" below). The doctor's profile and
-history live in the browser's localStorage only — transcription itself is
-fully stateless. The one deliberate exception is finalizing a request
-("Done — Print label"): that confirmed transcript IS stored server-side
-(SQLite), because that's what makes the printed barcode scannable/
-look-up-able by lab staff afterwards — see "Barcode label printing"
+Transcription is **hosted, not local**: this server never loads a speech
+model into its own process — it forwards the audio to Groq and gets a
+transcript back. That's a deliberate choice, not the original design (see
+"Speech-to-text (Groq)" below) — it's what keeps the FastAPI backend light
+enough to run on a free hosted tier (Render Free and similar), where running
+a multi-gigabyte model in-process isn't realistic.
+
+No SNOMED CT yet (see "Out of scope" below). Transcription itself is
+fully stateless — nothing about a dictation in progress is ever sent to
+the server except the audio and the field-level edits the doctor makes
+while reviewing it. The doctor's account (`backend/doctors.py`) and
+History (a doctor's own finalized requests) live server-side, so the
+same login and the same request history work from any device — see
+"Doctor accounts" under the API section below. The one thing that makes
+a request exist centrally at all is finalizing it ("Done — Print
+label"): that confirmed transcript IS stored server-side, because that's
+what makes the printed barcode scannable/look-up-able by lab staff
+afterwards, AND what History reads back — see "Barcode label printing"
 below for why, and what that changes.
 
 ## Architecture
 
 ```
-  Phone / browser (PWA)                            Server
-  ┌────────────────────────┐   POST audio   ┌───────────────────────────────┐
-  │ MediaRecorder → Blob    │ ─────────────► │ FastAPI  /transcribe          │
-  │ shows normalized        │ ◄───────────── │  1. faster-whisper (Whisper)  │
-  │ transcript (raw         │  JSON {         │  2. field_extraction.py:      │
-  │ available via toggle) + │   raw_text,     │     proforma → named fields   │
-  │ tests-required list,    │   normalized_   │  3. datetime_normalize.py +   │
-  │ doctor confirms         │   text,         │     terminology_normalize.py: │
-  │                         │   structured}   │     per-field normalization   │
-  └────────────────────────┘                 └───────────────────────────────┘
+  Phone / browser (PWA)                Server                      Groq (hosted)
+  ┌────────────────────┐  POST audio  ┌──────────────────────┐  POST audio  ┌─────────────────┐
+  │ MediaRecorder→Blob  │ ───────────► │ FastAPI  /transcribe │ ───────────► │ whisper-large-   │
+  │ shows normalized    │ ◄─────────── │  1. transcription.py │ ◄─────────── │ v3-turbo         │
+  │ transcript (raw     │  JSON {       │  2. field_extraction │  raw_text    └─────────────────┘
+  │ available via       │   raw_text,   │     .py: proforma →  │
+  │ toggle) + tests-    │   normalized_ │     named fields      │
+  │ required list,      │   text,       │  3. datetime_normalize│
+  │ doctor confirms      │   structured} │     .py + terminology_│
+  │                     │               │     normalize.py      │
+  └────────────────────┘               └──────────────────────┘
 ```
 
-Whisper and the normalization pipeline both run on the **server**, so the
-phone does no heavy work — it only records, displays, and lets the doctor
-confirm/reject the extracted tests. The same backend runs on a laptop CPU or
-a GPU machine with no code changes (controlled by environment variables).
+Speech-to-text runs on **Groq's hosted infrastructure**, not in this process
+— `transcription.py` is the one module that talks to Groq; everything from
+`field_extraction.py` onward only ever sees a plain transcript string and has
+no idea where it came from. The phone does no heavy work either way — it only
+records, displays, and lets the doctor confirm/reject the extracted tests.
 
 ## Repo layout
 
 ```
-backend/       FastAPI app (main.py), matching.py (NHLS/LOINC fuzzy suggestions),
+backend/       FastAPI app (main.py), transcription.py (Groq speech-to-text
+                adapter), matching.py (NHLS/LOINC fuzzy suggestions),
                 field_extraction.py + terminology_normalize.py + clinical_terminology.py +
                 datetime_normalize.py (structured pathology-request parsing),
                 label_printing.py + print_records.py (barcode printing + lookup),
+                doctors.py (server-side doctor accounts + sessions),
                 scripts/build_terminology_index.py, tests/
 frontend/      PWA — plain HTML/CSS/JS, no build step (lookup.html/lookup.js
                 is the separate lab-facing barcode lookup page)
@@ -51,14 +69,10 @@ requirements.txt
 ## Prerequisites
 
 - **Python 3.9+** (3.10 or 3.11 recommended).
-- **FFmpeg libraries** for decoding the browser's WebM/Opus (and iOS MP4/AAC).
-  faster-whisper reads audio through PyAV, which ships its own FFmpeg binaries,
-  so this usually works out of the box. If you hit a decoding error, install
-  system FFmpeg:
-  - Ubuntu/Debian: `sudo apt install ffmpeg`
-  - macOS: `brew install ffmpeg`
-  - Windows: download from ffmpeg.org and add it to PATH.
-- For GPU: an NVIDIA GPU with CUDA + cuDNN installed.
+- **A Groq API key** for speech-to-text — get one free at
+  [console.groq.com/keys](https://console.groq.com/keys). No local FFmpeg,
+  GPU, or CUDA setup is needed for transcription — that all runs on Groq's
+  infrastructure now (see "Speech-to-text (Groq)" below).
 
 ## Backend — install & run
 
@@ -68,13 +82,15 @@ python -m venv ../venv
 source ../venv/bin/activate        # Windows: ..\venv\Scripts\activate
 pip install -r ../requirements.txt
 
-uvicorn main:app --host 0.0.0.0 --port 8000
+GROQ_API_KEY=<your-key> uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
-First start downloads the Whisper model weights (large-v3 is ~3 GB) and
-caches them, so the first run is slow. Open <http://localhost:8000/> to see a
-health/config readout confirming the model, device, compute type, and whether
-terminology matching data loaded (`terminology_loaded`).
+No model download on startup — there's nothing to cache, since no speech
+model runs in this process. Open <http://localhost:8000/> to see a
+health/config readout confirming the configured Groq model
+(`transcription_model`), whether `GROQ_API_KEY` is actually set
+(`groq_api_key_configured`), and whether terminology matching data loaded
+(`terminology_loaded`).
 
 If you skip the terminology-matching setup below, transcription and field
 extraction still work fine — `tests_required` items just come back with
@@ -85,37 +101,47 @@ extraction still work fine — `tests_required` items just come back with
 printing" below. Skipping it is fine too: `/transcribe` and everything
 else works unaffected; only "Done — Print label" needs it.
 
-### CPU vs GPU
+### Speech-to-text (Groq)
 
-Everything is set by environment variables — no code edits:
+`backend/transcription.py` is the one module that talks to a speech-to-text
+provider — `backend/main.py`'s `/transcribe` endpoint calls its
+`transcribe_audio()` and gets back a plain `(raw_text, language, duration,
+segments)` tuple; `field_extraction.py` and everything downstream of it only
+ever sees `raw_text` as a string and has no idea it came from Groq.
 
-| Variable       | Default (CPU)     | For GPU        | Notes                                   |
-|----------------|-------------------|----------------|-----------------------------------------|
-| `WHISPER_MODEL`| `large-v3`        | `large-v3`     | try `small`/`medium` on CPU while dev'ing |
-| `DEVICE`       | `cpu`             | `cuda`         |                                         |
-| `COMPUTE_TYPE` | `int8` (auto)     | `float16` (auto)| auto-picked from DEVICE if unset        |
+| Variable            | Default                  | Notes                                                        |
+|----------------------|---------------------------|---------------------------------------------------------------|
+| `GROQ_API_KEY`       | (unset — **required**)   | server-side only; `/transcribe` returns a controlled error if unset |
+| `GROQ_WHISPER_MODEL` | `whisper-large-v3-turbo` | only set this if you want a different Groq-hosted model       |
 
-```bash
-# CPU (default) — just run it:
-uvicorn main:app --host 0.0.0.0 --port 8000
+**This was originally a locally-loaded [faster-whisper](https://github.com/SYSTRAN/faster-whisper)
+model (`large-v3`, run in-process on this server's own CPU/GPU).** It was
+migrated to Groq's hosted API for one reason: `faster-whisper` pulls in
+`ctranslate2`/`onnxruntime`/PyAV and a ~3GB model download, which doesn't fit
+a free hosted tier's memory/CPU budget (Render Free, for instance). Moving
+inference to Groq means this FastAPI process now only ever runs application
+logic — no model weights, no GPU/CPU inference, no multi-gigabyte download —
+while the doctor-facing behavior (one continuous dictation → one transcript →
+the same six-block structured review) is unchanged.
 
-# GPU — much faster:
-DEVICE=cuda COMPUTE_TYPE=float16 uvicorn main:app --host 0.0.0.0 --port 8000
+The browser's `MediaRecorder` produces `audio/webm` (Chrome/Firefox/Android)
+or `audio/mp4` (iOS Safari) with no forced codec; Groq's API accepts both
+formats directly, so no audio conversion step exists in this project, before
+or after this migration.
 
-# Faster iteration on a CPU laptop with a smaller model:
-WHISPER_MODEL=small uvicorn main:app --host 0.0.0.0 --port 8000
-```
+Groq's `prompt` parameter (same role as faster-whisper's old
+`initial_prompt` — nudges ambiguous audio toward expected spelling without
+restricting what can be transcribed) carries the same `MEDICAL_PROMPT` text
+as before, now defined in `transcription.py`. Groq's community forum has
+reported intermittent server errors tied specifically to that parameter —
+if you see transcription failures that disappear when you remove the
+`prompt` argument in `transcription.py`, that's a known upstream quirk, not
+a bug in this code.
 
-> **Note:** `large-v3` on CPU is *slow but functional* — expect several times
-> real-time for a short clip. Setting `DEVICE=cuda` with `COMPUTE_TYPE=float16`
-> is dramatically faster and is the recommended way to run the full model.
-
-### Medical vocabulary bias
-
-`backend/main.py` has a clearly-labelled `MEDICAL_PROMPT` constant seeded with
-common South African pathology terms (FBC, U&E, creatinine, CRP, HbA1c, EDTA
-tube, etc.). Whisper uses it as an `initial_prompt` to nudge spelling/word
-choice. Edit it freely — it biases, it does not restrict.
+**Automated tests never contact Groq.** `backend/tests/test_transcribe_endpoint.py`
+monkeypatches `transcription.transcribe_audio()` directly — no `GROQ_API_KEY`
+is needed to run the test suite, and no test makes a real network call or
+spends Groq free-tier quota. See "Running the tests" below.
 
 ### Terminology matching (NHLS + LOINC)
 
@@ -394,22 +420,51 @@ A fixed required-field list (specimen type/site, reason for request,
 hospital, ward, patient hospital number, clinical history, provisional
 diagnosis, a non-empty tests-required list, priority, and a confirmed —
 not merely dictated — collection date/time) is checked after every
-transcription, edit, or resolve action (`getIncompleteFields()`/
-`refreshValidation()`). While anything's missing or still ambiguous, a
-"Request incomplete" banner names exactly what, and the final "Done —
-Print label" button stays disabled. The least-disruptive fix for a
-missing or wrong field is "Edit transcript" — free-text correction that
-re-parses through `POST /extract-fields`, never a re-recording.
+transcription and every in-block field edit/resolve
+(`getIncompleteFields()`/`refreshValidation()`). While anything's
+missing or still ambiguous, a "Request incomplete" banner names exactly
+what, and the final "Done — Print label" button stays disabled.
 
-A collection time dictated without am/pm is never guessed
-(`datetime_normalize.normalize_time()` already refuses to — see above);
-the block shows two quick-pick buttons ("10:30 AM" / "10:30 PM") instead,
-resolved via `POST /normalize-time`. Block 5 (Tests required / Tubes
-required) also carries a required confirmation checkbox — *"I confirm
-that I have checked the specimen/container requirements and used the
-correct collection tubes/containers"* — that's part of the same Done
-gate, and is automatically re-unchecked whenever the tube grouping
-changes underneath it (e.g. resolving an ambiguous test), so a stale
+**Every field in every block is directly editable in place** — never a
+separate free-text re-parse step. A missing field (e.g. Hospital was
+never dictated) shows as an empty input with a "Not dictated — click to
+add" placeholder, right there in its block; a typo is fixed by typing
+over it. Saving a field never touches any other field, and never
+re-parses the system's own reconstructed display text as if it were a
+fresh dictation — the exact mechanism behind every round-trip bug found
+during testing (a leading colon never stripped, a reconstructed label
+the parser didn't recognize, a confirmed time silently losing its AM/PM,
+test names compounding into nested garbage on repeated saves). Each
+field kind has its own save path, dispatching to the same deterministic
+normalization function `extract_fields()` already calls internally —
+just reachable per-field instead of only via a whole-transcript re-parse:
+
+- **Plain fields** (specimen type/site, reason for request, hospital,
+  ward, patient hospital number, priority, ...) — pure raw passthrough,
+  no backend call at all.
+- **Date/time fields** — `POST /normalize-date` / `POST /normalize-time`
+  (see below). A collection time dictated without am/pm is never guessed
+  (`datetime_normalize.normalize_time()` already refuses to); the field
+  shows two quick-pick buttons ("10:30 AM" / "10:30 PM") alongside the
+  input as a one-click shortcut, both ending at the same endpoint.
+- **Clinical history / Provisional diagnosis / Relevant medication** —
+  `POST /resolve-clinical-field`, re-running only that field's
+  abbreviation expansion and ambiguous-term flagging from its own raw
+  text. An unresolved ambiguous term shows as a small chip —
+  `"TB" — choose what you meant` — opening the same candidate popup
+  tests_required's own ambiguous items use.
+- **Tests required** — an unrecognized/mistyped item gets an inline
+  text fix; a "+ Add test" input covers a test that was never dictated
+  at all. Both resolve via `POST /normalize-test-item`, re-matching only
+  that one test name against NHLS/LOINC without touching any other
+  already-confirmed item in the list.
+
+Block 5 (Tests required / Tubes required) also carries a required
+confirmation checkbox — *"I confirm that I have checked the
+specimen/container requirements and used the correct collection
+tubes/containers"* — that's part of the same Done gate, and is
+automatically re-unchecked whenever the tube grouping changes underneath
+it (e.g. resolving an ambiguous test or fixing a test name), so a stale
 confirmation can never silently survive a change to what it was
 confirming.
 
@@ -439,8 +494,10 @@ ambiguous abbreviation ranks differently depending on `clinical_history`,
 proving context actually flows end-to-end, not just that the ranking
 function works in isolation), normalized-transcript construction, and
 integration tests that post through the **real** `POST /transcribe` route
-with Whisper's recognition step stubbed (so it's fast/deterministic) but
-every line of the extraction/normalization/matching code running for real
+with `transcription.transcribe_audio()` (the Groq adapter) monkeypatched to
+a canned transcript — so it's fast/deterministic, needs no `GROQ_API_KEY`,
+and makes no network call or Groq API usage — but every line of the
+extraction/normalization/matching code still runs for real
 — including a regression test confirming a decoy phrase embedded in prose
 (e.g. "urea analysis urine microscopy") never surfaces as a suggested
 test, and one confirming an ambiguous abbreviation reaches the frontend
@@ -820,23 +877,70 @@ hit an unexpected error — it fails safe, falling back to `raw_text` for
 `normalized_text` too); see "Structured field extraction" above for the
 full field list and what each status value means.
 
+### Doctor accounts
+
+Doctor accounts and History live **server-side** (`backend/doctors.py`),
+not in the browser — this is what makes "log in with the same HPCSA
+number and password on a different device" work at all; it used to be
+pure `localStorage`, a blank slate on every new device/browser. See
+`doctors.py`'s own docstring for the full design reasoning (PBKDF2-
+HMAC-SHA256 password hashing, a unique salt per password, and —
+importantly — a doctor's session tokens live in their own table, one row
+per login, so logging in on a phone never invalidates a PC's
+already-stored token).
+
+`POST /register` — `{"name": "Dr. ...", "hpcsa_number": "...", "cell":
+"...", "email": "...", "password": "..."}` → `201 {"token": "...",
+"doctor": {"hpcsa_number", "name", "cell", "email"}}` (never includes
+the password). `409` if that HPCSA number is already registered.
+
+`POST /login` — `{"hpcsa_number": "...", "password": "..."}` → `200
+{"token": "...", "doctor": {...}}`. `401` with the generic "Incorrect
+HPCSA number or password." either way — never reveals which field was
+wrong.
+
+`GET /me` (`Authorization: Bearer <token>`) — resolves a stored session
+token back to a doctor profile. Called on page load to resume a session,
+now that there's nothing left to resume from locally except the token
+itself.
+
+`PUT /profile` / `PUT /password` (token required) — update name/cell/
+email, or change password (`{"current_password", "new_password"}`,
+`401` if the current password is wrong).
+
+`GET /requests` (token required) — this doctor's own History:
+`{"requests": [...]}`, each entry the same shape `GET
+/print-lookup/{request_id}` already returns, newest first. Deliberately
+**finalized/printed requests only** — there's no separate server-side
+store of in-progress or abandoned dictations; a request only exists here
+once "Done — Print label" has actually been pressed (see
+`print_records.get_records_for_doctor()`'s docstring). The History
+screen's search box filters this list client-side; nothing server-side
+needs its own search query for a per-doctor list of this size.
+
 ### Clinician disambiguation UI
 
 Every ambiguous abbreviation — in `tests_required`, `clinical_history`,
-`provisional_diagnosis`, or `medication` — is highlighted **directly in
-the displayed transcript** at its `"{raw} [ambiguous — please confirm]"`
-marker (`frontend/app.js`'s `renderNormalizedHtml()`). Tapping the
-highlighted term pops up its candidate list right there — canonical name,
-domain hint, and the ranking `reason` — plus a **"None of these / keep
-original"** option, none pre-selected. Picking a candidate patches that
-exact occurrence (and only that occurrence — if the same abbreviation is
-ambiguous in two different fields, e.g. "TB" in both Provisional diagnosis
-and Tests required, each is tracked and resolved independently) in the
-displayed transcript and immediately saves the updated text to the History
-entry. `tests_required` additionally keeps its checkbox-based "Tests
-required" panel below the transcript, for including/excluding confirmed
-(non-ambiguous) items before saving — an item resolved via the inline
-popup becomes checkable there too, exactly like any other confirmed test.
+`provisional_diagnosis`, or `medication` — surfaces as a small clickable
+chip, `"TB" — choose what you meant`, next to its field (either inside
+the field's block, via `frontend/app.js`'s `renderAmbiguousChip()`, or
+inline in the Tests required panel's own list for a `tests_required`
+item) rather than highlighted inline in running text — a chip works
+regardless of whether that field is a static display or a live editable
+textarea. Tapping it (`openAmbiguousPopup()`) pops up its candidate
+list — canonical name, domain hint, and the ranking `reason` — plus a
+**"None of these / keep original"** option, none pre-selected. Picking a
+candidate mutates that exact item's resolution (`resolveAmbiguousItem()`,
+field + raw + the underlying item reference — never ambiguous markers
+re-matched against transcript text) and immediately regenerates the flat
+transcript (`POST /rebuild-transcript`) and saves it to the History
+entry. If the same abbreviation is ambiguous in two different fields
+(e.g. "TB" in both Provisional diagnosis and Tests required), each is
+its own chip, tracked and resolved independently. `tests_required`
+additionally keeps its checkbox-based "Tests required" panel for
+including/excluding confirmed (non-ambiguous) items before saving — an
+item resolved via its chip becomes checkable there too, exactly like any
+other confirmed test.
 
 ### Finalizing a request: printing + lookup
 
@@ -934,27 +1038,42 @@ in JavaScript.
 `{"value": "10:30", "status": "confirmed"}` (or `{"value": null,
 "status": "ambiguous"}` if `raw` still has no explicit am/pm). A thin
 wrapper around `datetime_normalize.normalize_time()` — zero new
-normalization logic. Backs the six-block review UI's AM/PM quick-pick:
-when a dictated time is missing am/pm, the frontend offers two buttons
-("10:30 AM" / "10:30 PM") instead of guessing; picking one calls this
-endpoint with the chosen suffix appended, so "what counts as a valid
+normalization logic. Backs every `time_*` field's inline editor
+(including the AM/PM quick-pick shortcut), so "what counts as a valid
 time" has exactly one definition, never duplicated in JavaScript.
 
-`POST /extract-fields` — JSON body `{"text": "..."}`, returns
-`{"structured": {...}, "normalized_text": "..."}` — re-runs the exact
-same `field_extraction.extract_fields()` + `build_normalized_text()`
-`/transcribe` already uses, just on hand-typed text instead of a fresh
-Whisper transcription. Backs "Save edits" in the transcript edit box: the
-six review blocks and the completeness check both read `structured`
-directly, so without this, a manual correction to the free-text box
-would silently desync them until the next real dictation.
+`POST /normalize-date` — the date counterpart to the above, JSON body
+`{"raw": "5 October 2026"}`, returns `{"value": "2026-10-05", "status":
+"confirmed"}`. A thin wrapper around `datetime_normalize.normalize_date()`.
+Backs every `date_*` field's inline editor.
+
+`POST /resolve-clinical-field` — JSON body `{"field_key":
+"clinical_history", "raw_text": "...", "structured": {...}}`, returns
+`{"field": {...}}` in the same shape `extract_fields()` already produces
+for that field (`raw`/`value`/`status`/`resolved_terms`). A thin wrapper
+around `clinical_terminology.resolve_field_text()`, dispatching the same
+`CLINICAL_ABBREVIATIONS`/`MEDICATION_ABBREVIATIONS` dictionary per
+`field_key` that `extract_fields()`'s own second pass already uses.
+Backs clinical_history/provisional_diagnosis/medication's inline
+textarea — re-resolving only the one edited field from its own raw text,
+never the whole transcript.
+
+`POST /normalize-test-item` — JSON body `{"raw": "FBC", "structured":
+{...}}`, returns `{"item": {...}}` — one `tests_required` list entry, in
+the same shape `/transcribe` already produces. A thin wrapper around
+`terminology_normalize.normalize_tests_required()` for exactly one test
+name (`split_test_items()` on a single name returns a one-item list, so
+the first result is the resolved item). Backs fixing an
+unrecognized/mistyped test inline and "+ Add test", both replacing or
+appending exactly one entry in `tests_required` without touching any
+other already-confirmed item. `400` if `raw` is empty or doesn't contain
+a recognizable test name.
 
 `POST /rebuild-transcript` — JSON body `{"structured": {...}}`, returns
 `{"normalized_text": "..."}` — a thin wrapper around
-`field_extraction.build_normalized_text()`. Called after an action that
-mutates one field of `structured` directly (resolving an ambiguous
-abbreviation inline, or the AM/PM quick-pick above) rather than through
-the free-text edit box, so the flat `normalized_text` string — what's
+`field_extraction.build_normalized_text()`. Called after any in-block
+field save (every one of the endpoints above mutates one field of
+`structured` directly), so the flat `normalized_text` string — what's
 actually saved to history and printed on the label — is regenerated from
 the same reconstruction logic every other path already uses, instead of
 being hand-patched in JavaScript.
@@ -1037,12 +1156,20 @@ full list with examples):
 
 | Variable            | Purpose                                                              |
 |----------------------|-----------------------------------------------------------------------|
-| `DATABASE_URL`       | PostgreSQL connection string. Unset → falls back to the local SQLite file, so local dev/tests need no Postgres at all. |
+| `GROQ_API_KEY`       | **Required.** Server-side only — see "Speech-to-text (Groq)" above. Never set this in any frontend file. |
+| `GROQ_WHISPER_MODEL` | Default `whisper-large-v3-turbo`. Only set if you want a different Groq-hosted model. |
+| `DATABASE_URL`       | PostgreSQL connection string. Unset → falls back to the local SQLite file, so local dev/tests need no Postgres at all. Independent of where the backend itself is hosted — e.g. a free [Neon](https://neon.tech) Postgres instance works here regardless of whether the backend runs on Render or anywhere else. |
 | `ALLOWED_ORIGINS`    | Comma-separated frontend origin(s) for CORS. Unset → `*` (development-only — see `main.py`'s comment). |
 | `FRONTEND_URL`       | Where `frontend/lookup.html` is actually served — used to build the QR's lookup URL. |
 | `PRINT_AGENT_TOKEN`  | Shared secret the local print agent authenticates with. Unset → every agent-facing endpoint rejects everything (fails closed, never silently open). |
 | `STALE_JOB_TIMEOUT_SECONDS` | Default `120` — how long a job can sit "printing" before it's considered an abandoned/crashed claim and re-offered. |
 | `MAX_PRINT_ATTEMPTS` | Default `5` — a job reclaimed this many times without succeeding is auto-marked `"failed"` instead of retried forever. |
+
+Because speech-to-text is now a hosted API call rather than an in-process
+model, the backend itself needs comparatively little memory/CPU — this is
+what makes a free hosted tier (e.g. Render Free) realistic for this
+prototype, with Groq handling the one actually heavy part (speech
+inference) and Neon (or any standard PostgreSQL host) handling storage.
 
 **Frontend** — still just static files, no build step; any static host
 works (Render Static Site, GitHub Pages, Netlify, ...). Point it at the
@@ -1101,6 +1228,17 @@ patient data on its own:
   is a prototype-appropriate simplification, not a final-state auth
   model — see "Local print agent" above for the natural per-station
   upgrade path.
+- **Speech-to-text now leaves this server entirely.** Dictated audio is
+  sent to Groq's hosted API for transcription — a materially different
+  data flow from a locally-loaded model, where audio never left the
+  server's own process. This prototype only ever uses synthetic
+  dictation, so that's acceptable here; it is **not** acceptable for real
+  patient audio without first reviewing Groq's own data handling/retention
+  terms, a data-processing agreement, POPIA (or the applicable local
+  privacy law) compliance, institutional/security review, audit
+  requirements, and clinical governance sign-off. None of that review is
+  done or assumed by this code — it's a separate undertaking, not
+  addressed here.
 
 ## Out of scope (deliberately)
 
@@ -1118,12 +1256,10 @@ patient data on its own:
   ambiguous candidates but never auto-selects one, even with strong
   one-sided evidence; deferred until validated against a clinically
   reviewed dataset.
-- Doctor profiles, history, and confirmed tests live in the browser's
-  localStorage only — the server stores nothing about them. The one
-  exception is finalized (printed) requests, which are stored centrally
-  (PostgreSQL in a hosted deployment, local SQLite otherwise) specifically
-  so lab staff can look them up from the barcode — see "Barcode label
-  printing" and "Hosted deployment" above for why, and what that changes.
+- **In-progress/abandoned dictations are never stored server-side** —
+  only a finalized (printed) request is (see "Doctor accounts" and
+  "Barcode label printing" above). A dictation the doctor never finishes
+  reviewing leaves no trace once the tab closes.
 - Authentication on the lab lookup page — the request ID is the only
   access control for now (see "Hosted deployment" above for why this
   matters more once the backend is reachable over the internet).

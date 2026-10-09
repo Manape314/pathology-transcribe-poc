@@ -40,6 +40,7 @@ from sqlalchemy import (
     Table,
     Text,
     create_engine,
+    desc,
     inspect,
     select,
     text,
@@ -224,3 +225,24 @@ def get_record(request_id: str) -> dict | None:
     record = dict(row)
     record["label_image"] = record.pop("label_image_base64")
     return record
+
+
+def get_records_for_doctor(hpcsa_number: str) -> list[dict]:
+    """Backs GET /requests (doctors.py's token auth gates who can call
+    it) — a doctor's own History, newest first. Deliberately returns only
+    FINALIZED/printed requests, the same ones GET /print-lookup/{id}
+    already serves individually: there is no separate store of
+    in-progress or abandoned dictations server-side, by design (see this
+    module's docstring)."""
+    with _engine.connect() as conn:
+        rows = conn.execute(
+            select(print_records)
+            .where(print_records.c.hpcsa_number == hpcsa_number)
+            .order_by(desc(print_records.c.created_at))
+        ).mappings().all()
+    records = []
+    for row in rows:
+        record = dict(row)
+        record["label_image"] = record.pop("label_image_base64")
+        records.append(record)
+    return records

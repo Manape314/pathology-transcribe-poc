@@ -6,17 +6,14 @@ const recordBtn = document.getElementById("recordBtn");
 const statusEl = document.getElementById("status");
 const transcriptEl = document.getElementById("transcript");
 const toggleRawBtn = document.getElementById("toggleRawBtn");
-const editTranscriptBtn = document.getElementById("editTranscriptBtn");
-const transcriptEditArea = document.getElementById("transcriptEditArea");
-const transcriptEditActions = document.getElementById("transcriptEditActions");
-const saveTranscriptEditBtn = document.getElementById("saveTranscriptEditBtn");
-const cancelTranscriptEditBtn = document.getElementById("cancelTranscriptEditBtn");
 
 const testsSection = document.getElementById("testsSection");
 const testsList = document.getElementById("testsList");
 const testsEmpty = document.getElementById("testsEmpty");
 const confirmTestsBtn = document.getElementById("confirmTestsBtn");
 const skipTestsBtn = document.getElementById("skipTestsBtn");
+const addTestInput = document.getElementById("addTestInput");
+const addTestBtn = document.getElementById("addTestBtn");
 
 const specimenSection = document.getElementById("specimenSection");
 const specimenGroups = document.getElementById("specimenGroups");
@@ -63,20 +60,23 @@ const BLOCK_DEFS = [
     ["hospital", "Hospital", "plain"],
     ["ward", "Ward", "plain"],
   ]],
+  // Patient hospital number ONLY — no patient name, DOB, phone, or
+  // address in this block (explicit requirement; never add one back in
+  // without being asked).
   [blockPatient, [
-    ["patient_name", "Patient name", "plain"],
-    ["date_of_birth", "Date of birth", "date"],
     ["patient_id", "Patient hospital number", "plain"],
   ]],
+  // Clinical History + Provisional Diagnosis ONLY — no medication in
+  // this block (explicit requirement; never add it back in without
+  // being asked).
   [blockClinical, [
     ["clinical_history", "Clinical history", "clinical"],
     ["provisional_diagnosis", "Provisional diagnosis", "clinical"],
-    ["medication", "Relevant medication", "clinical"],
   ]],
+  // Priority ONLY — no date/time requested in this block (explicit
+  // requirement; never add them back in without being asked).
   [blockPriority, [
     ["priority", "Priority", "plain"],
-    ["date_requested", "Date requested", "date"],
-    ["time_requested", "Time requested", "time"],
   ]],
 ];
 
@@ -109,7 +109,6 @@ let lastTestsRequired = []; // the tests_required items currently rendered
 let currentNormalizedText = "";
 let currentRawText = "";
 let showingRaw = false;
-let editingTranscript = false; // see enterEditMode()/saveTranscriptEdit()/cancelTranscriptEdit()
 let currentStructured = {}; // the full structured object from the last transcription
 let currentEntryId = null; // the History entry id the current transcript is saved under
 
@@ -193,7 +192,7 @@ async function sendForTranscription(blob) {
   form.append("file", blob, `recording.${ext}`);
 
   try {
-    const res = await fetch(`${BACKEND_URL}/transcribe`, {
+    const res = await backendFetch(`/transcribe`, {
       method: "POST",
       body: form,
     });
@@ -230,45 +229,17 @@ async function sendForTranscription(blob) {
   }
 }
 
-function escapeHtml(s) {
-  const div = document.createElement("div");
-  div.textContent = s;
-  return div.innerHTML;
-}
-
-// Every ambiguous abbreviation anywhere in the current structured result —
-// regardless of which field it came from (clinical_history,
-// provisional_diagnosis, tests_required, medication) — gets ONE consistent
-// treatment: it's highlighted directly in the transcript text, and clicking
-// it pops up its candidate list right there. This replaces separate
-// below-transcript panels for each field with a single, discoverable
-// interaction.
-//
-// Order matters here: it MUST match the field order build_normalized_text
-// (backend/field_extraction.py's _DISPLAY_FIELDS) actually writes the
-// transcript in — clinical_history, provisional_diagnosis, tests_required,
-// medication — so that if the SAME abbreviation is ambiguous in two
-// different fields (e.g. "TB" in both Provisional diagnosis and Tests
-// required), the two identical marker strings in the text get paired up
-// with the right underlying item, not swapped.
+// Every ambiguous abbreviation in a field actually SHOWN in a block
+// (clinical_history, provisional_diagnosis, tests_required — not
+// medication, which isn't displayed anywhere) gets ONE consistent
+// treatment: a small clickable "resolve" chip next to its field, opening
+// the same candidate-choice popup (see renderAmbiguousChip/
+// openAmbiguousPopup below).
 function collectAmbiguousItems() {
   const items = [];
-  // Tracks, per distinct marker STRING, how many times we've seen it so
-  // far in this pass — gives each entry an `occurrenceIndex` (its 0-based
-  // position among identical markers) which both rendering and resolution
-  // use to target the correct occurrence, never a blanket replace-all.
-  const occurrenceCounters = new Map();
 
   function pushEntry(field, raw, candidates, item) {
-    const marker = `${raw} [ambiguous — please confirm]`;
-    // Keyed per (field, marker) — highlightAmbiguousMarkers() now searches
-    // within one field's own isolated text at a time (one block each),
-    // not the single whole-transcript string this was originally written
-    // for, so the occurrence count must restart per field.
-    const counterKey = `${field}::${marker}`;
-    const occurrenceIndex = occurrenceCounters.get(counterKey) || 0;
-    occurrenceCounters.set(counterKey, occurrenceIndex + 1);
-    items.push({ field, raw, candidates, item, marker, occurrenceIndex });
+    items.push({ field, raw, candidates, item });
   }
 
   ["clinical_history", "provisional_diagnosis"].forEach((field) => {
@@ -282,129 +253,225 @@ function collectAmbiguousItems() {
     if (item.status === "ambiguous") pushEntry("tests_required", item.raw, item.candidates, item);
   });
 
-  const medicationTerms = (currentStructured.medication || {}).resolved_terms || [];
-  medicationTerms.forEach((item) => {
-    if (item.status === "ambiguous") pushEntry("medication", item.raw_phrase, item.candidates, item);
-  });
+  // medication is intentionally not collected here — it's never shown in
+  // any block (see BLOCK_DEFS), so there'd be nowhere to render its chip.
 
   return items;
 }
 
-// Finds the start index of the (n+1)th occurrence of `needle` in
-// `haystack` (0-based `n`), or -1 if there aren't that many.
-function nthIndexOf(haystack, needle, n) {
-  let from = 0;
-  for (let i = 0; i < n; i++) {
-    const pos = haystack.indexOf(needle, from);
-    if (pos === -1) return -1;
-    from = pos + needle.length;
-  }
-  return haystack.indexOf(needle, from);
-}
-
-const ambiguousItemsById = new Map();
-
-// Wraps every marker in `items` (a pre-filtered subset of
-// collectAmbiguousItems(), one field's worth) that's found inside `text`
-// in a clickable <span>. This is the SAME algorithm the old whole-
-// transcript renderer used, just scoped to one field's own text instead
-// of the full reconstructed paragraph — called once per clinical block
-// field (Clinical history / Provisional diagnosis / Relevant medication),
-// so IDs accumulate across a render pass; callers clear
-// ambiguousItemsById ONCE before the first call, not per field.
-function highlightAmbiguousMarkers(text, items) {
-  const escaped = escapeHtml(text);
-
-  const insertions = [];
-  items.forEach((entry) => {
-    const escapedMarker = escapeHtml(entry.marker);
-    const pos = nthIndexOf(escaped, escapedMarker, entry.occurrenceIndex);
-    if (pos === -1) return; // not present in this field's text — nothing to highlight
-    const id = `amb-${ambiguousItemsById.size}`;
-    ambiguousItemsById.set(id, entry);
-    insertions.push({ start: pos, end: pos + escapedMarker.length, id, html: escapedMarker });
-  });
-
-  insertions.sort((a, b) => a.start - b.start);
-
-  let html = "";
-  let cursor = 0;
-  insertions.forEach(({ start, end, id, html: markerHtml }) => {
-    html += escaped.slice(cursor, start);
-    html += `<span class="ambiguous-highlight" data-amb-id="${id}" tabindex="0" role="button">${markerHtml}</span>`;
-    cursor = end;
-  });
-  html += escaped.slice(cursor);
-  return html;
+// A small clickable chip for one ambiguous entry — opens the same
+// candidate-choice popup tests_required's own ambiguous items already use.
+function renderAmbiguousChip(entry) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "ambiguous-resolve-btn";
+  btn.textContent = `"${entry.raw}" — choose what you meant`;
+  btn.addEventListener("click", () => openAmbiguousPopup(btn, entry));
+  return btn;
 }
 
 // Builds the two AM/PM quick-pick buttons for a time field that was
 // dictated without am/pm (datetime_normalize.normalize_time() already
 // refuses to guess — see backend/field_extraction.py). Clicking one
-// calls POST /normalize-time with the SAME raw text + the chosen suffix,
-// so "what counts as a valid time" has exactly one definition, never
-// duplicated in JavaScript.
+// calls POST /normalize-time (via saveDateOrTimeField) with the SAME raw
+// text + the chosen suffix, so "what counts as a valid time" has exactly
+// one definition, never duplicated in JavaScript.
 function renderAmPmQuickPick(fieldKey, raw) {
-  const escapedRaw = escapeHtml(raw);
-  return (
-    `<span class="ampm-prompt">"${escapedRaw}" — ` +
-    `<button type="button" class="ampm-btn" data-field-key="${fieldKey}" data-raw="${escapedRaw}" data-ampm="AM">${escapedRaw} AM</button> ` +
-    `<button type="button" class="ampm-btn" data-field-key="${fieldKey}" data-raw="${escapedRaw}" data-ampm="PM">${escapedRaw} PM</button>` +
-    `</span>`
-  );
+  const wrap = document.createElement("span");
+  wrap.className = "ampm-prompt";
+  wrap.appendChild(document.createTextNode(`"${raw}" — `));
+
+  const amBtn = document.createElement("button");
+  amBtn.type = "button";
+  amBtn.className = "ampm-btn";
+  amBtn.textContent = `${raw} AM`;
+  amBtn.addEventListener("click", () => saveDateOrTimeField(fieldKey, "time", `${raw} AM`));
+  wrap.appendChild(amBtn);
+
+  wrap.appendChild(document.createTextNode(" "));
+
+  const pmBtn = document.createElement("button");
+  pmBtn.type = "button";
+  pmBtn.className = "ampm-btn";
+  pmBtn.textContent = `${raw} PM`;
+  pmBtn.addEventListener("click", () => saveDateOrTimeField(fieldKey, "time", `${raw} PM`));
+  wrap.appendChild(pmBtn);
+
+  return wrap;
 }
 
-function appendFieldRow(dl, label, valueHtml) {
+function appendFieldRow(dl, label, valueNode) {
   const dt = document.createElement("dt");
   dt.textContent = label;
   const dd = document.createElement("dd");
-  dd.innerHTML = valueHtml;
+  dd.appendChild(valueNode);
   dl.appendChild(dt);
   dl.appendChild(dd);
+  return dd;
+}
+
+// A single-line editable field, live in its block — never a separate
+// free-text re-parse step. Saves on focusout (or Enter), and only if the
+// value actually changed, so clicking in and back out of an untouched
+// field never fires a network call.
+function createFieldInput(initialValue, placeholder, onSave) {
+  const input = document.createElement("input");
+  input.type = "text";
+  input.className = "field-input";
+  input.value = initialValue || "";
+  input.placeholder = placeholder;
+  input.addEventListener("focusout", () => {
+    if (input.value === initialValue) return;
+    onSave(input.value);
+  });
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      input.blur(); // triggers the focusout handler above
+    }
+  });
+  return input;
+}
+
+function createFieldTextarea(initialValue, onSave) {
+  const textarea = document.createElement("textarea");
+  textarea.className = "field-textarea";
+  textarea.value = initialValue || "";
+  textarea.placeholder = "Not dictated — click to add";
+  textarea.addEventListener("focusout", () => {
+    if (textarea.value === initialValue) return;
+    onSave(textarea.value);
+  });
+  return textarea;
+}
+
+// Pure client-side update — specimen_type/specimen_site/reason_for_request/
+// hospital/ward/patient_id/priority/patient_name are raw passthrough with
+// no server-side normalization at all, so there's nothing to call out to.
+async function savePlainField(key, newValue) {
+  const trimmed = newValue.trim();
+  currentStructured[key] = trimmed ? { raw: trimmed, value: trimmed, status: "extracted" } : null;
+  await rebuildNormalizedText();
+  updateTranscriptView();
+  updateHistoryText(currentEntryId, currentNormalizedText);
+}
+
+// Shared by every date_*/time_* field, the inline input's save handler AND
+// the AM/PM quick-pick buttons — "what counts as a valid date/time" has
+// exactly one definition each (datetime_normalize.normalize_date()/
+// normalize_time()), never duplicated in JavaScript.
+async function saveDateOrTimeField(key, kind, newRawText) {
+  const raw = newRawText.trim();
+  if (!raw) {
+    currentStructured[key] = null;
+    currentStructured[`${key}_status`] = "ambiguous";
+    currentStructured[`${key}_raw`] = "";
+    await rebuildNormalizedText();
+    updateTranscriptView();
+    updateHistoryText(currentEntryId, currentNormalizedText);
+    return;
+  }
+  const endpoint = kind === "time" ? "/normalize-time" : "/normalize-date";
+  try {
+    const res = await backendFetch(`${endpoint}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ raw }),
+    });
+    if (!res.ok) throw new Error(`Server responded ${res.status}`);
+    const data = await res.json();
+    currentStructured[key] = data.value;
+    currentStructured[`${key}_status`] = data.status;
+    currentStructured[`${key}_raw`] = raw;
+    await rebuildNormalizedText();
+    updateTranscriptView();
+    updateHistoryText(currentEntryId, currentNormalizedText);
+    setStatus(
+      data.status === "confirmed"
+        ? `${kind === "time" ? "Time" : "Date"} resolved → ${data.value}.`
+        : `Still ambiguous: "${raw}" — try again with the full date/time.`
+    );
+  } catch (err) {
+    console.error(err);
+    setStatus(`Failed to resolve ${key}: ` + err.message);
+  }
+}
+
+// Shared by clinical_history/provisional_diagnosis/medication's inline
+// textarea — re-resolves ONLY this one field (abbreviation expansion +
+// ambiguous-term flagging) from its own raw text, via the exact same
+// clinical_terminology.resolve_field_text() field_extraction.py already
+// calls internally, never a whole-transcript re-parse.
+async function saveClinicalField(key, newRawText) {
+  try {
+    const res = await backendFetch(`/resolve-clinical-field`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ field_key: key, raw_text: newRawText, structured: currentStructured }),
+    });
+    if (!res.ok) throw new Error(`Server responded ${res.status}`);
+    const data = await res.json();
+    currentStructured[key] = data.field;
+    await rebuildNormalizedText();
+    updateTranscriptView();
+    updateHistoryText(currentEntryId, currentNormalizedText);
+  } catch (err) {
+    console.error(err);
+    setStatus(`Failed to update ${key}: ` + err.message);
+  }
 }
 
 function renderBlockField(dl, key, label, kind) {
   if (kind === "plain") {
     const field = currentStructured[key];
-    if (!field || !field.value) return; // skip empty — same convention as build_normalized_text
-    appendFieldRow(dl, label, escapeHtml(field.value));
+    const value = field && field.value ? field.value : "";
+    const input = createFieldInput(value, "Not dictated — click to add", (newValue) =>
+      savePlainField(key, newValue)
+    );
+    appendFieldRow(dl, label, input);
     return;
   }
 
   if (kind === "date" || kind === "time") {
-    if (!(key in currentStructured)) return;
-    const value = currentStructured[key];
-    const status = currentStructured[`${key}_status`];
-    if (status === "confirmed" && value) {
-      appendFieldRow(dl, label, escapeHtml(value));
-      return;
-    }
     const raw = currentStructured[`${key}_raw`] || "";
-    if (!raw) return; // nothing was dictated for this field at all
-    // Only offer the quick-pick when am/pm is plausibly the ONLY thing
-    // missing — anything stranger ("around three", "this morning") still
-    // falls back to the plain "[unconfirmed]" text + Edit transcript.
-    if (kind === "time" && !/[ap]\.?\s*m\.?/i.test(raw)) {
-      appendFieldRow(dl, label, renderAmPmQuickPick(key, raw));
-    } else {
-      appendFieldRow(
-        dl, label,
-        `<span class="field-unconfirmed">${escapeHtml(raw)} [unconfirmed — please verify]</span>`
-      );
+    const status = currentStructured[`${key}_status`];
+    const confirmedValue = currentStructured[key];
+    // Once resolved, show the clean resolved value (e.g. "2026-10-06" /
+    // "07:55"), not the raw dictated phrase — only an unresolved field
+    // shows its raw text, as the thing still needing to be fixed.
+    const displayValue = status === "confirmed" && confirmedValue ? confirmedValue : raw;
+    const input = createFieldInput(displayValue, "Not dictated — click to add", (newValue) =>
+      saveDateOrTimeField(key, kind, newValue)
+    );
+    if (raw && status !== "confirmed") input.classList.add("field-input-unconfirmed");
+    const dd = appendFieldRow(dl, label, input);
+
+    // One-click shortcut alongside the input, only when am/pm is plausibly
+    // the ONLY thing missing — anything stranger ("around three", "this
+    // morning") still just needs the full corrected text typed in.
+    if (kind === "time" && status !== "confirmed" && raw && !/[ap]\.?\s*m\.?/i.test(raw)) {
+      dd.appendChild(renderAmPmQuickPick(key, raw));
     }
     return;
   }
 
   if (kind === "clinical") {
     const field = currentStructured[key];
-    if (!field || !field.value) return;
+    const raw = (field && field.raw) || "";
+    const textarea = createFieldTextarea(raw, (newValue) => saveClinicalField(key, newValue));
+    const dd = appendFieldRow(dl, label, textarea);
+
     const items = collectAmbiguousItems().filter((entry) => entry.field === key);
-    appendFieldRow(dl, label, highlightAmbiguousMarkers(field.value, items));
+    if (items.length) {
+      const chipList = document.createElement("div");
+      chipList.className = "ambiguous-chip-list";
+      items.forEach((entry) => chipList.appendChild(renderAmbiguousChip(entry)));
+      dd.appendChild(chipList);
+    }
   }
 }
 
 function renderAllBlocks() {
-  ambiguousItemsById.clear(); // one shared id sequence across the whole render pass
   BLOCK_DEFS.forEach(([dl, fields]) => {
     dl.innerHTML = "";
     fields.forEach(([key, label, kind]) => renderBlockField(dl, key, label, kind));
@@ -437,12 +504,15 @@ function getIncompleteFields(structured) {
 
   const hasUnresolvedAmbiguous =
     tests.some((t) => t.status === "ambiguous") ||
-    ["clinical_history", "provisional_diagnosis", "medication"].some((key) => {
+    // medication is intentionally not checked here — it's never shown in
+    // any block (see BLOCK_DEFS), so there'd be no chip to resolve it
+    // with; an ambiguous term there must never block Done.
+    ["clinical_history", "provisional_diagnosis"].some((key) => {
       const field = structured[key];
       return field && (field.resolved_terms || []).some((t) => t.status === "ambiguous");
     });
   if (hasUnresolvedAmbiguous) {
-    missing.push("Unresolved ambiguous term(s) — tap the highlighted text to resolve");
+    missing.push("Unresolved ambiguous term(s) — tap \"choose what you meant\" to resolve");
   }
 
   return missing;
@@ -471,7 +541,7 @@ function refreshValidation() {
   }
 
   doneBtn.disabled =
-    !currentEntryId || editingTranscript || incomplete.length > 0 || !specimenConfirmCheckbox.checked;
+    !currentEntryId || incomplete.length > 0 || !specimenConfirmCheckbox.checked;
 }
 
 specimenConfirmCheckbox.addEventListener("change", refreshValidation);
@@ -484,7 +554,7 @@ specimenConfirmCheckbox.addEventListener("change", refreshValidation);
 // resolve, AM/PM resolve) rather than through the free-text Edit box.
 async function rebuildNormalizedText() {
   try {
-    const res = await fetch(`${BACKEND_URL}/rebuild-transcript`, {
+    const res = await backendFetch(`/rebuild-transcript`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ structured: currentStructured }),
@@ -500,48 +570,6 @@ async function rebuildNormalizedText() {
     // successful resolve.
   }
 }
-
-async function resolveTimeAmPm(fieldKey, raw, ampm) {
-  try {
-    const res = await fetch(`${BACKEND_URL}/normalize-time`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ raw: `${raw} ${ampm}` }),
-    });
-    if (!res.ok) throw new Error(`Server responded ${res.status}`);
-    const data = await res.json();
-
-    currentStructured[fieldKey] = data.value;
-    currentStructured[`${fieldKey}_status`] = data.status;
-    currentStructured[`${fieldKey}_raw`] = `${raw} ${ampm}`;
-
-    await rebuildNormalizedText();
-    updateTranscriptView();
-    updateHistoryText(currentEntryId, currentNormalizedText);
-    setStatus(`Resolved time → ${data.value} (${ampm}).`);
-  } catch (err) {
-    console.error(err);
-    setStatus("Failed to resolve time: " + err.message);
-  }
-}
-
-// Single delegated listener for both interaction types that live inside
-// the six blocks: ambiguous-term highlights (clinical_history/
-// provisional_diagnosis/medication) and the AM/PM quick-pick buttons.
-blocksContainer.addEventListener("click", (e) => {
-  const ampmBtn = e.target.closest(".ampm-btn");
-  if (ampmBtn) {
-    e.stopPropagation();
-    resolveTimeAmPm(ampmBtn.dataset.fieldKey, ampmBtn.dataset.raw, ampmBtn.dataset.ampm);
-    return;
-  }
-  const span = e.target.closest(".ambiguous-highlight");
-  if (span) {
-    e.stopPropagation();
-    const entry = ambiguousItemsById.get(span.dataset.ambId);
-    if (entry) openAmbiguousPopup(span, entry);
-  }
-});
 
 function updateTranscriptView() {
   if (showingRaw) {
@@ -560,7 +588,6 @@ function updateTranscriptView() {
 }
 
 function resetTranscriptView() {
-  exitEditMode();
   currentNormalizedText = "";
   currentRawText = "";
   currentStructured = {};
@@ -574,82 +601,6 @@ toggleRawBtn.addEventListener("click", () => {
   showingRaw = !showingRaw;
   updateTranscriptView();
 });
-
-// ---------------------------------------------------------------------------
-// Transcript edit mode — free-text correction (e.g. a Whisper spelling
-// mistake, or typing in a field the doctor forgot to dictate) before
-// confirming. Saving RE-PARSES the edited text through the same
-// field_extraction.py used by /transcribe (POST /extract-fields), so the
-// six blocks and the completeness check never go stale relative to a
-// hand-typed correction — this is also why "least disruptive mechanism
-// already supported" doubles as the fix for a missing field: typing
-// "Priority: Routine" into this box and saving makes Priority show up
-// resolved in its block, exactly as if it had been dictated.
-// ---------------------------------------------------------------------------
-
-function enterEditMode() {
-  if (!currentNormalizedText && !currentRawText) return; // nothing to edit yet
-  showingRaw = false;
-  editingTranscript = true;
-  transcriptEditArea.value = currentNormalizedText;
-  transcriptEl.classList.add("hidden");
-  blocksContainer.classList.add("hidden");
-  incompleteBanner.classList.add("hidden");
-  toggleRawBtn.classList.add("hidden");
-  editTranscriptBtn.classList.add("hidden");
-  transcriptEditArea.classList.remove("hidden");
-  transcriptEditActions.classList.remove("hidden");
-  doneBtn.disabled = true; // avoid submitting a stale pre-edit version mid-edit
-  transcriptEditArea.focus();
-}
-
-function exitEditMode() {
-  editingTranscript = false;
-  transcriptEditArea.value = "";
-  transcriptEditArea.classList.add("hidden");
-  transcriptEditActions.classList.add("hidden");
-  toggleRawBtn.classList.remove("hidden");
-  editTranscriptBtn.classList.remove("hidden");
-  updateTranscriptView(); // re-shows raw text or blocks (whichever showingRaw says) + re-validates
-}
-
-async function saveTranscriptEdit() {
-  const editedText = transcriptEditArea.value;
-  saveTranscriptEditBtn.disabled = true;
-  try {
-    const res = await fetch(`${BACKEND_URL}/extract-fields`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: editedText }),
-    });
-    if (!res.ok) throw new Error(`Server responded ${res.status}`);
-    const data = await res.json();
-
-    currentStructured = data.structured || {};
-    currentNormalizedText = data.normalized_text || editedText;
-    exitEditMode();
-    if (currentEntryId) {
-      renderTests(currentEntryId, currentStructured.tests_required || []);
-      renderSpecimenGroups(currentStructured.specimen_requirements || []);
-      updateHistoryText(currentEntryId, currentNormalizedText);
-    }
-    setStatus("Transcript updated.");
-  } catch (err) {
-    console.error(err);
-    setStatus("Failed to save edits: " + err.message);
-  } finally {
-    saveTranscriptEditBtn.disabled = false;
-  }
-}
-
-function cancelTranscriptEdit() {
-  exitEditMode();
-  setStatus("Edit cancelled.");
-}
-
-editTranscriptBtn.addEventListener("click", enterEditMode);
-saveTranscriptEditBtn.addEventListener("click", saveTranscriptEdit);
-cancelTranscriptEditBtn.addEventListener("click", cancelTranscriptEdit);
 
 // ---------------------------------------------------------------------------
 // Inline ambiguous-term click-to-choose popup
@@ -669,9 +620,10 @@ function closeAmbiguousPopup() {
   }
 }
 
-// Ambiguous-term clicks are handled by the single delegated listener on
-// blocksContainer (see above, near highlightAmbiguousMarkers) — that's
-// where these spans actually live now; transcriptEl is raw-text-only.
+// Opened directly by whichever chip/button triggered it (renderAmbiguousChip
+// for clinical/medication fields, the equivalent button in renderTests() for
+// tests_required) — each already closes over its own `entry`, no delegated
+// listener or DOM lookup needed.
 
 function openAmbiguousPopup(anchorEl, entry) {
   closeAmbiguousPopup();
@@ -782,7 +734,7 @@ async function resolveAmbiguousItem(entry, candidate) {
 // section just keeps showing its last-known groups.
 async function refreshSpecimenRequirements() {
   try {
-    const res = await fetch(`${BACKEND_URL}/specimen-requirements`, {
+    const res = await backendFetch(`/specimen-requirements`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ tests_required: currentStructured.tests_required || [] }),
@@ -897,16 +849,116 @@ function renderTests(entryId, testsRequired) {
     } else {
       const warning = document.createElement("p");
       warning.className = "match-name";
-      warning.textContent = "Unrecognized — clinician confirmation required";
+      warning.textContent = "Unrecognized — fix it directly below";
       body.appendChild(warning);
+
+      const fixRow = document.createElement("div");
+      fixRow.className = "unrecognized-fix-row";
+      const fixInput = createFieldInput(item.raw, "Correct test name", (newRaw) =>
+        saveTestItemFix(index, newRaw)
+      );
+      fixRow.appendChild(fixInput);
+      body.appendChild(fixRow);
     }
 
     el.appendChild(body);
+
+    // Removing a test is always available, regardless of status — covers
+    // a garbled/unwanted item (e.g. a stray "priority agent" phrase
+    // misheard as a test name) as well as a confirmed test the doctor
+    // simply doesn't want, without needing to re-dictate anything.
+    const removeBtn = document.createElement("button");
+    removeBtn.type = "button";
+    removeBtn.className = "remove-test-btn";
+    removeBtn.setAttribute("aria-label", `Remove "${item.raw}"`);
+    removeBtn.textContent = "×";
+    removeBtn.addEventListener("click", () => removeTestItem(index));
+    el.appendChild(removeBtn);
+
     testsList.appendChild(el);
   });
 
   testsSection.classList.remove("hidden");
 }
+
+// Removing a test never calls the backend — nothing to re-normalize,
+// just drop the one entry and resync everything downstream of the list
+// (tube groupings, the specimen-confirm checkbox, Done gating).
+async function removeTestItem(index) {
+  const [removed] = currentStructured.tests_required.splice(index, 1);
+  await rebuildNormalizedText();
+  renderTests(currentEntryId, currentStructured.tests_required);
+  await refreshSpecimenRequirements(); // also re-validates (see its own docstring)
+  updateHistoryText(currentEntryId, currentNormalizedText);
+  setStatus(removed ? `Removed "${removed.raw}".` : "Test removed.");
+}
+
+// Shared by an unrecognized item's inline fix AND "+ Add test" below —
+// both resolve exactly ONE test name via the exact same
+// terminology_normalize.normalize_tests_required() the initial dictation
+// itself goes through, never touching any other item in the list.
+async function resolveOneTestName(raw) {
+  const res = await backendFetch(`/normalize-test-item`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ raw, structured: currentStructured }),
+  });
+  if (!res.ok) throw new Error(`Server responded ${res.status}`);
+  const data = await res.json();
+  return data.item;
+}
+
+async function saveTestItemFix(index, newRaw) {
+  const trimmed = newRaw.trim();
+  if (!trimmed) return;
+  try {
+    const item = await resolveOneTestName(trimmed);
+    currentStructured.tests_required[index] = item;
+    await rebuildNormalizedText();
+    renderTests(currentEntryId, currentStructured.tests_required);
+    await refreshSpecimenRequirements(); // also re-validates (see its own docstring)
+    updateHistoryText(currentEntryId, currentNormalizedText);
+    setStatus(
+      item.status === "confirmed"
+        ? `Resolved "${trimmed}" → ${item.normalized}.`
+        : `"${trimmed}" is still not recognized — check the spelling.`
+    );
+  } catch (err) {
+    console.error(err);
+    setStatus("Failed to update test: " + err.message);
+  }
+}
+
+async function addTest() {
+  const trimmed = addTestInput.value.trim();
+  if (!trimmed) return;
+  try {
+    const item = await resolveOneTestName(trimmed);
+    currentStructured.tests_required = currentStructured.tests_required || [];
+    currentStructured.tests_required.push(item);
+    addTestInput.value = "";
+    await rebuildNormalizedText();
+    renderTests(currentEntryId, currentStructured.tests_required);
+    await refreshSpecimenRequirements(); // also re-validates (see its own docstring)
+    updateHistoryText(currentEntryId, currentNormalizedText);
+    setStatus(
+      item.status === "confirmed"
+        ? `Added "${trimmed}" → ${item.normalized}.`
+        : `Added "${trimmed}" — not recognized, check the spelling.`
+    );
+  } catch (err) {
+    console.error(err);
+    setStatus("Failed to add test: " + err.message);
+  }
+}
+
+addTestBtn.addEventListener("click", addTest);
+addTestInput.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    addTest();
+  }
+});
 
 confirmTestsBtn.addEventListener("click", () => {
   const entryId = testsSection.dataset.entryId;
@@ -976,7 +1028,7 @@ function hidePrintSection() {
 async function pollPrintStatus(requestId) {
   if (requestId !== currentRequestId) return; // superseded by a newer submission
   try {
-    const res = await fetch(`${BACKEND_URL}/print-status/${encodeURIComponent(requestId)}`);
+    const res = await backendFetch(`/print-status/${encodeURIComponent(requestId)}`);
     if (!res.ok) throw new Error(`Server responded ${res.status}`);
     const data = await res.json();
 
@@ -1005,9 +1057,7 @@ async function pollPrintStatus(requestId) {
 }
 
 doneBtn.addEventListener("click", async () => {
-  const hpcsa = getSession();
-  const doctor = hpcsa ? getDoctor(hpcsa) : null;
-  if (!doctor) {
+  if (!currentDoctor) {
     printStatus.textContent = "Not logged in — please log in again.";
     return;
   }
@@ -1017,13 +1067,13 @@ doneBtn.addEventListener("click", async () => {
   printStatus.textContent = "Submitting…";
 
   try {
-    const res = await fetch(`${BACKEND_URL}/print-label`, {
+    const res = await backendFetch(`/print-label`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        doctor_name: doctor.name,
-        doctor_phone: doctor.cell,
-        hpcsa_number: doctor.hpcsa,
+        doctor_name: currentDoctor.name,
+        doctor_phone: currentDoctor.cell,
+        hpcsa_number: currentDoctor.hpcsa_number,
         raw_text: currentRawText,
         normalized_text: currentNormalizedText,
         structured: currentStructured,
@@ -1068,8 +1118,8 @@ retryPrintBtn.addEventListener("click", async () => {
   printStatus.textContent = "Retrying…";
 
   try {
-    const res = await fetch(
-      `${BACKEND_URL}/print-jobs/${encodeURIComponent(currentRequestId)}/retry`,
+    const res = await backendFetch(
+      `/print-jobs/${encodeURIComponent(currentRequestId)}/retry`,
       { method: "POST" }
     );
     if (!res.ok) throw new Error(`Server responded ${res.status}`);

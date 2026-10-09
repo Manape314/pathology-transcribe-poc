@@ -749,6 +749,33 @@ def _split_plain(segment: str) -> list[str]:
     return [p for p in _DELIM_RE.split(segment) if p.strip()]
 
 
+# build_normalized_text()'s own status markers for an unresolved test item
+# (field_extraction._format_test_item) — e.g. "FBC [unrecognized]". If a
+# doctor fixes a typo via "Edit transcript" but leaves the surrounding
+# marker in place (it looks like part of the display, not something to
+# delete), the WHOLE string gets re-parsed as one literal test name unless
+# this is stripped first — "FBC [unrecognized]" never matches "FBC" in the
+# abbreviation dictionary, so the fix would otherwise appear to do nothing.
+_STALE_TEST_ANNOTATION_SUFFIXES = (
+    " [ambiguous — please confirm]",
+    " [unrecognized]",
+)
+
+
+def _strip_stale_annotations(item: str) -> str:
+    # Loops so an already-doubled-up marker (stacked from more than one
+    # prior edit/save cycle) is fully cleaned in one pass, not just the
+    # outermost layer.
+    changed = True
+    while changed:
+        changed = False
+        for suffix in _STALE_TEST_ANNOTATION_SUFFIXES:
+            if item.endswith(suffix):
+                item = item[: -len(suffix)].strip()
+                changed = True
+    return item
+
+
 def split_test_items(raw: str) -> list[str]:
     """
     Tokenizes a raw "tests required" string into individual items on
@@ -766,7 +793,7 @@ def split_test_items(raw: str) -> list[str]:
         pos = m.end()
     items.extend(_split_plain(raw[pos:]))
 
-    return [i.strip() for i in items if i.strip()]
+    return [_strip_stale_annotations(i.strip()) for i in items if i.strip()]
 
 
 def _context_text(context: dict | None, sibling_raw: str) -> str:
@@ -813,6 +840,29 @@ def _base_result(raw: str) -> dict:
         "candidates": None,
         "reason": None,
     }
+
+
+def _peel_trailing_parenthetical(text: str) -> str | None:
+    """If `text` ends with one well-formed, depth-balanced trailing
+    parenthetical group — e.g. "Full Blood Count (FBC)", or the more
+    deeply nested "Bilirubin (total) (Bilirubin (total) (Total Bilirubin
+    (TB)))" this app's own reconstruction round trip can produce — returns
+    the text with that OUTERMOST group removed. Returns None if `text`
+    doesn't end in a balanced parenthetical at all (so a genuine test name
+    with no trailing parens is left completely untouched)."""
+    text = text.rstrip()
+    if not text.endswith(")"):
+        return None
+    depth = 0
+    for i in range(len(text) - 1, -1, -1):
+        if text[i] == ")":
+            depth += 1
+        elif text[i] == "(":
+            depth -= 1
+            if depth == 0:
+                prefix = text[:i].strip()
+                return prefix or None
+    return None  # unbalanced — not a real trailing group, leave alone
 
 
 def normalize_test_item(raw_item: str, context_text: str = "") -> dict:
@@ -893,7 +943,29 @@ def normalize_test_item(raw_item: str, context_text: str = "") -> dict:
         )
         return result
 
-    # F: fuzzy fallback, stricter cutoff than the general suggestion panel.
+    # F1: this app's own "{canonical name} ({originally dictated form})"
+    # reconstruction (field_extraction._format_test_item) round-tripping
+    # back through here as if it were fresh dictation — e.g. after "Edit
+    # transcript" re-parses the displayed transcript text. The fuzzy
+    # fallback below uses fuzz.token_set_ratio, which is DELIBERATELY
+    # blind to word repetition/order — so without this step, the whole
+    # noisy reconstructed string keeps fuzzy-matching successfully and
+    # getting wrapped in yet ANOTHER layer on every single save,
+    # compounding without bound. This strips exactly one well-formed
+    # trailing parenthetical and retries deterministic (never-guessed)
+    # matching on the peeled prefix FIRST, before ever reaching fuzzy
+    # matching on the noisy original. A genuine first-time dictation of a
+    # canonical name that legitimately contains parentheses (e.g.
+    # "Bilirubin (total)") is unaffected — it already matched exactly in
+    # step E above and never reaches here at all.
+    peeled = _peel_trailing_parenthetical(raw)
+    if peeled:
+        peeled_result = normalize_test_item(peeled, context_text)
+        if peeled_result["status"] in ("confirmed", "ambiguous"):
+            peeled_result["raw"] = raw
+            return peeled_result
+
+    # F2: fuzzy fallback, stricter cutoff than the general suggestion panel.
     hit = matching.best_single_match(raw, min_score=FUZZY_MIN_SCORE)
     if hit is not None:
         terminology_system = "NHLS" if hit["source"] == "nhls" else "LOINC"

@@ -1,13 +1,12 @@
 // ===========================================================================
-// Doctor login / registration — all on-device, no backend involved.
-//
-// Profiles are stored in localStorage, keyed by HPCSA registration number.
-// Passwords are never stored: only a salted SHA-256 hash of the password.
+// Doctor login / registration — backed by the server (backend/doctors.py)
+// so the SAME HPCSA number and password work from any device, not just
+// the one that registered. Passwords never touch localStorage; only a
+// session token does, and the server is the only thing that ever checks
+// a password. See doctors.py's docstring for the hashing/session design.
 // ===========================================================================
 
-const DOCTOR_KEY_PREFIX = "pathdictate_doctor_";
-const HISTORY_KEY_PREFIX = "pathdictate_history_";
-const SESSION_KEY = "pathdictate_session";
+const SESSION_KEY = "pathdictate_session"; // stores the session TOKEN, not the hpcsa
 
 // Screens
 const loginScreen = document.getElementById("loginScreen");
@@ -61,53 +60,33 @@ const passwordSuccess = document.getElementById("passwordSuccess");
 
 // History screen
 const historyBackBtn = document.getElementById("historyBackBtn");
+const historySearchInput = document.getElementById("historySearchInput");
 const historyList = document.getElementById("historyList");
 const historyEmpty = document.getElementById("historyEmpty");
 
-function normalizeHpcsa(value) {
-  return value.trim().toUpperCase();
-}
+// The doctor profile returned by the last successful /login, /register,
+// /me, or /profile call — kept in memory only (never localStorage), so
+// doctorGreeting/the profile form always reflect the latest server state
+// without a network round trip on every single read. Always re-fetched
+// (via /me) on page load, so a stale value here never outlives the tab.
+let currentDoctor = null;
 
-function doctorStorageKey(hpcsa) {
-  return DOCTOR_KEY_PREFIX + normalizeHpcsa(hpcsa);
-}
-
-function getDoctor(hpcsa) {
-  const raw = localStorage.getItem(doctorStorageKey(hpcsa));
-  return raw ? JSON.parse(raw) : null;
-}
-
-function saveDoctor(doctor) {
-  localStorage.setItem(doctorStorageKey(doctor.hpcsa), JSON.stringify(doctor));
-}
-
-function bufferToHex(buffer) {
-  return Array.from(new Uint8Array(buffer))
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
-}
-
-function randomSaltHex() {
-  const bytes = crypto.getRandomValues(new Uint8Array(16));
-  return bufferToHex(bytes.buffer);
-}
-
-async function hashPassword(password, saltHex) {
-  const data = new TextEncoder().encode(saltHex + password);
-  const digest = await crypto.subtle.digest("SHA-256", data);
-  return bufferToHex(digest);
-}
-
-function setSession(hpcsa) {
-  localStorage.setItem(SESSION_KEY, normalizeHpcsa(hpcsa));
+function setSession(token) {
+  localStorage.setItem(SESSION_KEY, token);
 }
 
 function clearSession() {
   localStorage.removeItem(SESSION_KEY);
+  currentDoctor = null;
 }
 
 function getSession() {
   return localStorage.getItem(SESSION_KEY);
+}
+
+function authHeaders() {
+  const token = getSession();
+  return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
 function showScreen(screen) {
@@ -120,6 +99,7 @@ function clearAuthErrors() {
 }
 
 function enterApp(doctor) {
+  currentDoctor = doctor;
   doctorGreeting.textContent = doctor.name;
   showScreen(appScreen);
   maybeOfferInstall();
@@ -147,29 +127,28 @@ loginForm.addEventListener("submit", async (e) => {
   e.preventDefault();
   clearAuthErrors();
 
-  const hpcsa = loginHpcsa.value;
+  const hpcsa_number = loginHpcsa.value;
   const password = loginPassword.value;
-  const doctor = getDoctor(hpcsa);
 
-  // Generic error either way — never reveal which field was wrong.
-  const fail = () => {
-    loginError.textContent = "Incorrect HPCSA number or password.";
-  };
-
-  if (!doctor) {
-    fail();
-    return;
+  try {
+    const res = await backendFetch(`/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ hpcsa_number, password }),
+    });
+    if (!res.ok) {
+      // Same generic message regardless of which field was wrong,
+      // whatever the server's actual detail text says.
+      loginError.textContent = "Incorrect HPCSA number or password.";
+      return;
+    }
+    const data = await res.json();
+    setSession(data.token);
+    loginForm.reset();
+    enterApp(data.doctor);
+  } catch (err) {
+    loginError.textContent = "Could not reach the server: " + err.message;
   }
-
-  const enteredHash = await hashPassword(password, doctor.salt);
-  if (enteredHash !== doctor.passwordHash) {
-    fail();
-    return;
-  }
-
-  setSession(doctor.hpcsa);
-  loginForm.reset();
-  enterApp(doctor);
 });
 
 // --- Registration --------------------------------------------------------
@@ -179,13 +158,13 @@ registerForm.addEventListener("submit", async (e) => {
   clearAuthErrors();
 
   const name = regName.value.trim();
-  const hpcsa = regHpcsa.value.trim();
+  const hpcsa_number = regHpcsa.value.trim();
   const cell = regCell.value.trim();
   const email = regEmail.value.trim();
   const password = regPassword.value;
   const password2 = regPassword2.value;
 
-  if (!name || !hpcsa || !cell || !email || !password) {
+  if (!name || !hpcsa_number || !cell || !email || !password) {
     registerError.textContent = "Please fill in all fields.";
     return;
   }
@@ -195,28 +174,27 @@ registerForm.addEventListener("submit", async (e) => {
     return;
   }
 
-  if (getDoctor(hpcsa)) {
-    registerError.textContent =
-      "This HPCSA number is already registered on this device. Please log in instead.";
-    return;
+  try {
+    const res = await backendFetch(`/register`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "Dr. " + name, hpcsa_number, cell, email, password }),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      registerError.textContent =
+        res.status === 409
+          ? "This HPCSA number is already registered. Please log in instead."
+          : data.detail || "Registration failed.";
+      return;
+    }
+    const data = await res.json();
+    setSession(data.token);
+    registerForm.reset();
+    enterApp(data.doctor);
+  } catch (err) {
+    registerError.textContent = "Could not reach the server: " + err.message;
   }
-
-  const salt = randomSaltHex();
-  const passwordHash = await hashPassword(password, salt);
-
-  const doctor = {
-    name: "Dr. " + name,
-    hpcsa,
-    cell,
-    email,
-    salt,
-    passwordHash,
-  };
-
-  saveDoctor(doctor);
-  setSession(doctor.hpcsa);
-  registerForm.reset();
-  enterApp(doctor);
 });
 
 // --- Logout ----------------------------------------------------------------
@@ -297,8 +275,7 @@ installDismissBtn.addEventListener("click", () => {
 // --- Profile editing ---------------------------------------------------------
 
 function openProfileScreen() {
-  const doctor = getDoctor(getSession());
-  if (!doctor) return;
+  if (!currentDoctor) return;
 
   profileError.textContent = "";
   profileSuccess.textContent = "";
@@ -306,10 +283,10 @@ function openProfileScreen() {
   passwordSuccess.textContent = "";
   passwordForm.reset();
 
-  profileName.value = doctor.name.replace(/^Dr\.\s*/, "");
-  profileHpcsa.value = doctor.hpcsa;
-  profileCell.value = doctor.cell;
-  profileEmail.value = doctor.email;
+  profileName.value = currentDoctor.name.replace(/^Dr\.\s*/, "");
+  profileHpcsa.value = currentDoctor.hpcsa_number;
+  profileCell.value = currentDoctor.cell;
+  profileEmail.value = currentDoctor.email;
 
   showScreen(profileScreen);
 }
@@ -317,7 +294,7 @@ function openProfileScreen() {
 profileNavBtn.addEventListener("click", openProfileScreen);
 profileBackBtn.addEventListener("click", () => showScreen(appScreen));
 
-profileForm.addEventListener("submit", (e) => {
+profileForm.addEventListener("submit", async (e) => {
   e.preventDefault();
   profileError.textContent = "";
   profileSuccess.textContent = "";
@@ -331,16 +308,23 @@ profileForm.addEventListener("submit", (e) => {
     return;
   }
 
-  const doctor = getDoctor(getSession());
-  if (!doctor) return;
-
-  doctor.name = "Dr. " + name;
-  doctor.cell = cell;
-  doctor.email = email;
-  saveDoctor(doctor);
-
-  doctorGreeting.textContent = doctor.name;
-  profileSuccess.textContent = "Profile updated.";
+  try {
+    const res = await backendFetch(`/profile`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", ...authHeaders() },
+      body: JSON.stringify({ name: "Dr. " + name, cell, email }),
+    });
+    if (!res.ok) {
+      profileError.textContent = "Could not update profile.";
+      return;
+    }
+    const data = await res.json();
+    currentDoctor = data.doctor;
+    doctorGreeting.textContent = currentDoctor.name;
+    profileSuccess.textContent = "Profile updated.";
+  } catch (err) {
+    profileError.textContent = "Could not reach the server: " + err.message;
+  }
 });
 
 passwordForm.addEventListener("submit", async (e) => {
@@ -348,136 +332,72 @@ passwordForm.addEventListener("submit", async (e) => {
   passwordError.textContent = "";
   passwordSuccess.textContent = "";
 
-  const doctor = getDoctor(getSession());
-  if (!doctor) return;
-
   const currentPassword = currentPasswordInput.value;
   const newPassword = newPasswordInput.value;
   const newPassword2 = newPassword2Input.value;
-
-  const currentHash = await hashPassword(currentPassword, doctor.salt);
-  if (currentHash !== doctor.passwordHash) {
-    passwordError.textContent = "Current password is incorrect.";
-    return;
-  }
 
   if (newPassword !== newPassword2) {
     passwordError.textContent = "New passwords do not match.";
     return;
   }
 
-  const salt = randomSaltHex();
-  doctor.salt = salt;
-  doctor.passwordHash = await hashPassword(newPassword, salt);
-  saveDoctor(doctor);
-
-  passwordForm.reset();
-  passwordSuccess.textContent = "Password updated.";
+  try {
+    const res = await backendFetch(`/password`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", ...authHeaders() },
+      body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+    });
+    if (!res.ok) {
+      passwordError.textContent = "Current password is incorrect.";
+      return;
+    }
+    passwordForm.reset();
+    passwordSuccess.textContent = "Password updated.";
+  } catch (err) {
+    passwordError.textContent = "Could not reach the server: " + err.message;
+  }
 });
 
-// --- Transcription history ----------------------------------------------------
+// ---------------------------------------------------------------------------
+// In-session bookkeeping for the CURRENT, still-being-reviewed dictation —
+// NOT History anymore (History is server-backed, finalized-requests-only;
+// see renderHistory() below). These exist purely so app.js keeps a stable,
+// non-null marker once a transcription exists (currentEntryId gates the
+// six-block view and the "Done" button), without persisting a draft
+// anywhere — a draft was never meant to sync across devices, only a
+// finalized, printed request is (see the History section below).
+// ---------------------------------------------------------------------------
 
-function historyStorageKey(hpcsa) {
-  return HISTORY_KEY_PREFIX + normalizeHpcsa(hpcsa);
+function addHistoryEntry(text) {
+  if (!text) return null;
+  return crypto.randomUUID ? crypto.randomUUID() : String(Date.now());
 }
 
-function getHistory(hpcsa) {
-  const raw = localStorage.getItem(historyStorageKey(hpcsa));
-  return raw ? JSON.parse(raw) : [];
+function confirmHistoryTests() {
+  // No-op: nothing local to update. Confirmed tests are already part of
+  // currentStructured in app.js, and reach the server as part of
+  // /print-label's body when the doctor presses "Done — Print label".
 }
 
-function saveHistory(hpcsa, entries) {
-  localStorage.setItem(historyStorageKey(hpcsa), JSON.stringify(entries));
+function updateHistoryText() {
+  // No-op — see the module comment above.
 }
 
-// Called by app.js after a successful transcription. `text` is the
-// clinician-facing normalized transcript (what's displayed by default and
-// what's shown in History); `rawText` is the untouched Whisper output,
-// kept for traceability. Returns the new entry's id so app.js can later
-// attach confirmed tests to this exact entry, rather than assuming "the
-// most recent one."
-function addHistoryEntry(text, rawText) {
-  const hpcsa = getSession();
-  if (!hpcsa || !text) return null;
-
-  const id = crypto.randomUUID
-    ? crypto.randomUUID()
-    : bufferToHex(crypto.getRandomValues(new Uint8Array(8)).buffer);
-
-  const entries = getHistory(hpcsa);
-  entries.unshift({
-    id,
-    text,
-    rawText: rawText || "",
-    timestamp: new Date().toISOString(),
-  });
-  saveHistory(hpcsa, entries);
-  return id;
+function attachLabelImage() {
+  // No-op — the label image is already saved server-side by /print-label
+  // itself (print_records.save_record); History reads it back from
+  // there (see renderHistory() below), nothing to mirror locally.
 }
 
-// Called by app.js once the doctor confirms which required tests to keep.
-// `updatedText`, if given, replaces the saved transcript — used when
-// resolving an ambiguous abbreviation patches "[ambiguous — please
-// confirm]" markers with the clinician's chosen expansion, so the saved
-// History entry reflects the final wording, not the pre-confirmation one.
-// Old entries (and entries where confirmation was skipped) simply have no
-// "testsRequired" key — see renderHistory's guard below.
-function confirmHistoryTests(entryId, tests, updatedText) {
-  const hpcsa = getSession();
-  if (!hpcsa || !entryId) return;
+// ---------------------------------------------------------------------------
+// History — a doctor's own FINALIZED (printed) requests, fetched from the
+// server (GET /requests) so the same list shows up on any device logged
+// into the same account. Deliberately does not include in-progress or
+// abandoned dictations — see backend/print_records.py's
+// get_records_for_doctor() docstring.
+// ---------------------------------------------------------------------------
 
-  const entries = getHistory(hpcsa);
-  const entry = entries.find((e) => e.id === entryId);
-  if (!entry) return;
-
-  entry.testsRequired = tests;
-  entry.testsConfirmed = true;
-  if (updatedText) {
-    entry.text = updatedText;
-  }
-  saveHistory(hpcsa, entries);
-}
-
-// Called by app.js's clinical_history/provisional_diagnosis/medication
-// confirmation panels once the doctor resolves an ambiguous abbreviation
-// in one of those fields. Only patches the saved transcript text — unlike
-// confirmHistoryTests, it never touches entry.testsRequired/
-// testsConfirmed, so it can't clobber the separate Tests required panel's
-// own save.
-function updateHistoryText(entryId, updatedText) {
-  const hpcsa = getSession();
-  if (!hpcsa || !entryId || !updatedText) return;
-
-  const entries = getHistory(hpcsa);
-  const entry = entries.find((e) => e.id === entryId);
-  if (!entry) return;
-
-  entry.text = updatedText;
-  saveHistory(hpcsa, entries);
-}
-
-// Called by app.js once "Done — Print label" returns successfully — saves
-// the SAME barcode image sent to the physical printer onto this History
-// entry, so the digital record always has its label too, not just the
-// transcript text. See backend/label_printing.py's image_to_data_url.
-function attachLabelImage(entryId, labelImageDataUrl) {
-  const hpcsa = getSession();
-  if (!hpcsa || !entryId || !labelImageDataUrl) return;
-
-  const entries = getHistory(hpcsa);
-  const entry = entries.find((e) => e.id === entryId);
-  if (!entry) return;
-
-  entry.labelImage = labelImageDataUrl;
-  saveHistory(hpcsa, entries);
-}
-
-function deleteHistoryEntry(id) {
-  const hpcsa = getSession();
-  if (!hpcsa) return;
-  saveHistory(hpcsa, getHistory(hpcsa).filter((entry) => entry.id !== id));
-  renderHistory();
-}
+let lastFetchedRequests = [];
 
 function formatTimestamp(iso) {
   return new Date(iso).toLocaleString(undefined, {
@@ -486,100 +406,102 @@ function formatTimestamp(iso) {
   });
 }
 
-function renderHistory() {
-  const hpcsa = getSession();
-  const entries = hpcsa ? getHistory(hpcsa) : [];
+function renderHistoryItem(record) {
+  const item = document.createElement("li");
+  item.className = "history-item";
 
-  historyList.innerHTML = "";
-  historyEmpty.classList.toggle("hidden", entries.length > 0);
+  const meta = document.createElement("div");
+  meta.className = "history-meta";
 
-  entries.forEach((entry) => {
-    const item = document.createElement("li");
-    item.className = "history-item";
+  const timestamp = document.createElement("span");
+  timestamp.className = "history-timestamp";
+  timestamp.textContent = formatTimestamp(record.created_at);
+  meta.appendChild(timestamp);
 
-    const meta = document.createElement("div");
-    meta.className = "history-meta";
+  const text = document.createElement("p");
+  text.className = "history-text";
+  text.textContent = record.normalized_text;
 
-    const timestamp = document.createElement("span");
-    timestamp.className = "history-timestamp";
-    timestamp.textContent = formatTimestamp(entry.timestamp);
+  item.appendChild(meta);
+  item.appendChild(text);
 
-    const deleteBtn = document.createElement("button");
-    deleteBtn.type = "button";
-    deleteBtn.className = "history-delete";
-    deleteBtn.textContent = "Delete";
-    deleteBtn.addEventListener("click", () => {
-      if (confirm("Delete this transcription from your history?")) {
-        deleteHistoryEntry(entry.id);
+  if (record.label_image) {
+    const label = document.createElement("img");
+    label.className = "label-image";
+    label.alt = "Printed barcode label";
+    label.src = record.label_image;
+    item.appendChild(label);
+  }
+
+  const testsRequired = (record.structured && record.structured.tests_required) || [];
+  const confirmedTests = testsRequired.filter((t) => t.status === "confirmed");
+  if (confirmedTests.length) {
+    const testsList = document.createElement("ul");
+    testsList.className = "history-matches";
+
+    confirmedTests.forEach((test) => {
+      const testItem = document.createElement("li");
+      testItem.className = "history-match-item";
+
+      const badge = document.createElement("span");
+      let badgeText;
+      if (test.match_type === "ambiguous_abbreviation") {
+        badgeText = "CONFIRMED";
+      } else if (test.match_type === "known_abbreviation") {
+        badgeText = "ABBREV";
+      } else if (test.terminology_system) {
+        badgeText = test.terminology_system;
+      } else {
+        badgeText = test.source === "loinc" ? "LOINC" : "NHLS";
       }
+      badge.className = "source-badge" + (badgeText === "LOINC" ? " loinc" : "");
+      badge.textContent = badgeText;
+
+      const label = document.createElement("span");
+      label.textContent = test.normalized;
+
+      testItem.appendChild(badge);
+      testItem.appendChild(label);
+      testsList.appendChild(testItem);
     });
 
-    meta.appendChild(timestamp);
-    meta.appendChild(deleteBtn);
+    item.appendChild(testsList);
+  }
 
-    const text = document.createElement("p");
-    text.className = "history-text";
-    text.textContent = entry.text;
-
-    item.appendChild(meta);
-    item.appendChild(text);
-
-    // Only entries finalized via "Done — Print label" have this — same
-    // guard-on-optional-key pattern as testsRequired below.
-    if (entry.labelImage) {
-      const label = document.createElement("img");
-      label.className = "label-image";
-      label.alt = "Printed barcode label";
-      label.src = entry.labelImage;
-      item.appendChild(label);
-    }
-
-    // Old entries (and entries where confirmation was skipped) simply
-    // don't have a "testsRequired" key — this guard is the entire
-    // backward-compat mechanism, no migration needed.
-    if (entry.testsRequired && entry.testsRequired.length) {
-      const testsList = document.createElement("ul");
-      testsList.className = "history-matches";
-
-      entry.testsRequired.forEach((test) => {
-        const testItem = document.createElement("li");
-        testItem.className = "history-match-item";
-
-        // Badge reflects HOW it was resolved, not just where the
-        // canonical name came from — a clinician-confirmed ambiguous
-        // abbreviation shouldn't be mislabeled with an unrelated
-        // terminology-system badge (its `source` is the chosen meaning's
-        // domain, e.g. "clinical_diagnosis", not "nhls"/"loinc").
-        const badge = document.createElement("span");
-        let badgeText;
-        if (test.match_type === "ambiguous_abbreviation") {
-          badgeText = "CONFIRMED";
-        } else if (test.match_type === "known_abbreviation") {
-          badgeText = "ABBREV";
-        } else if (test.terminology_system) {
-          badgeText = test.terminology_system;
-        } else {
-          badgeText = test.source === "loinc" ? "LOINC" : "NHLS";
-        }
-        badge.className = "source-badge" + (badgeText === "LOINC" ? " loinc" : "");
-        badge.textContent = badgeText;
-
-        const label = document.createElement("span");
-        label.textContent = test.normalized;
-
-        testItem.appendChild(badge);
-        testItem.appendChild(label);
-        testsList.appendChild(testItem);
-      });
-
-      item.appendChild(testsList);
-    }
-
-    historyList.appendChild(item);
-  });
+  return item;
 }
 
+function renderFilteredHistory() {
+  const query = historySearchInput.value.trim().toLowerCase();
+  const filtered = query
+    ? lastFetchedRequests.filter((r) => r.normalized_text.toLowerCase().includes(query))
+    : lastFetchedRequests;
+
+  historyList.innerHTML = "";
+  historyEmpty.classList.toggle("hidden", filtered.length > 0);
+  filtered.forEach((record) => historyList.appendChild(renderHistoryItem(record)));
+}
+
+async function renderHistory() {
+  historyList.innerHTML = "";
+  historyEmpty.classList.add("hidden");
+  try {
+    const res = await backendFetch(`/requests`, { headers: authHeaders() });
+    if (!res.ok) throw new Error(`Server responded ${res.status}`);
+    const data = await res.json();
+    lastFetchedRequests = data.requests || [];
+    renderFilteredHistory();
+  } catch (err) {
+    console.error("Failed to load history:", err);
+    historyEmpty.textContent = "Could not load history: " + err.message;
+    historyEmpty.classList.remove("hidden");
+  }
+}
+
+historySearchInput.addEventListener("input", renderFilteredHistory);
+
 function openHistoryScreen() {
+  historySearchInput.value = "";
   renderHistory();
   showScreen(historyScreen);
 }
@@ -589,14 +511,18 @@ historyBackBtn.addEventListener("click", () => showScreen(appScreen));
 
 // --- Resume session on load --------------------------------------------------
 
-(function init() {
-  const sessionHpcsa = getSession();
-  if (sessionHpcsa) {
-    const doctor = getDoctor(sessionHpcsa);
-    if (doctor) {
-      showScreen(appScreen);
-      doctorGreeting.textContent = doctor.name;
-      return;
+(async function init() {
+  const token = getSession();
+  if (token) {
+    try {
+      const res = await backendFetch(`/me`, { headers: authHeaders() });
+      if (res.ok) {
+        const data = await res.json();
+        enterApp(data.doctor);
+        return;
+      }
+    } catch (err) {
+      console.error("Failed to resume session:", err);
     }
     clearSession();
   }

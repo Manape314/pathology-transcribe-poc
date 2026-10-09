@@ -83,9 +83,9 @@ def test_build_normalized_text_substitutes_confident_values():
 
     # Confident date/time substitutions.
     assert "Date requested: 2026-09-22" in normalized_text
-    assert "Time requested: 14:35" in normalized_text
-    assert "Date collected: 2026-09-22" in normalized_text
-    assert "Time collected: 14:40" in normalized_text
+    assert "Time requested: 2:35 PM" in normalized_text
+    assert "Date of collection: 2026-09-22" in normalized_text
+    assert "Time of collection: 2:40 PM" in normalized_text
 
     # Ambiguous DOB keeps its raw phrase, clearly flagged, never guessed.
     assert "1998-8-August 14th, 6 May [unconfirmed" in normalized_text
@@ -382,3 +382,44 @@ def test_incidental_mid_sentence_label_word_is_not_mistaken_for_a_field():
         "patient reports this is a priority case for triage"
     )
     assert result["priority"]["value"] == "routine"
+
+
+def test_label_recognized_via_its_own_colon_does_not_leak_into_the_value():
+    # Regression lock: _is_real_label() accepts a colon as a valid
+    # label/value separator (same as a comma), but the value-extraction
+    # strip() never included ":" — so "Specimen type: blood." used to
+    # come back as {"value": ": blood"}, a leading colon baked into every
+    # field whenever the doctor (or the written dictation guide's own
+    # example) used colon-style punctuation instead of commas.
+    result = extract_fields(
+        "Specimen type: blood. Hospital: Greenside Clinic. Priority: routine."
+    )
+    assert result["specimen_type"]["value"] == "blood"
+    assert result["hospital"]["value"] == "Greenside Clinic"
+    assert result["priority"]["value"] == "routine"
+
+
+def test_date_and_time_of_collection_survive_an_edit_transcript_round_trip():
+    # Regression lock: build_normalized_text() used to reconstruct these
+    # two fields as "Date collected:"/"Time collected:" — wording
+    # _LABEL_DEFS does NOT recognize at all (only "Date of collection,"/
+    # "Time of collection," or the older combined "Date, time collected,"
+    # phrasing). Feeding build_normalized_text()'s own output back through
+    # extract_fields() silently swallowed both fields into whichever field
+    # came right before them — exactly the kind of bug a round-trip test
+    # is for, and worth keeping even now that nothing in the app re-parses
+    # reconstructed text this way anymore (inline per-field editing
+    # replaced that mechanism entirely).
+    first_pass = extract_fields(
+        "Date of collection, 5 October 2026. Time of collection, 10:30 AM. "
+        "Priority, routine."
+    )
+    reconstructed = build_normalized_text(first_pass)
+    assert "Date of collection: 2026-10-05" in reconstructed
+    assert "Time of collection: 10:30" in reconstructed
+
+    second_pass = extract_fields(reconstructed)
+    assert second_pass["date_collected"] == "2026-10-05"
+    assert second_pass["date_collected_status"] == "confirmed"
+    assert second_pass["time_collected"] == "10:30"
+    assert second_pass["time_collected_status"] == "confirmed"
