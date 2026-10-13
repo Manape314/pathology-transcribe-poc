@@ -119,11 +119,21 @@
         <h3 class="specimen-section-title">Tubes Required</h3>
         <div id="resultSpecimenGroups" class="specimen-groups"></div>
       </div>
+
+      <!-- Same checkbox table the doctor sees (frontend/test-table-data.js
+           / test-table-render.js), read-only — ticks reflect the finalized
+           request's tests_required. See lookup.js's runLookup(). -->
+      <div id="resultTestTableSection" class="test-table-section hidden">
+        <h3 class="specimen-section-title">Tests Required</h3>
+        <div id="resultTestTableContainer" class="test-table-container"></div>
+      </div>
     </section>
   </main>
 
   <script src="config.js"></script>
   <script src="specimen-render.js"></script>
+  <script src="test-table-data.js"></script>
+  <script src="test-table-render.js"></script>
   <!-- The frontend's first external script dependency — a small (~10KB
        minified), dependency-free QR decoder for the in-page "Scan QR"
        button below. Pinned to an exact version like every other

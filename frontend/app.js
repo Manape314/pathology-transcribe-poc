@@ -7,6 +7,7 @@ const statusEl = document.getElementById("status");
 const transcriptEl = document.getElementById("transcript");
 const toggleRawBtn = document.getElementById("toggleRawBtn");
 
+const testTableContainer = document.getElementById("testTableContainer");
 const testsSection = document.getElementById("testsSection");
 const testsList = document.getElementById("testsList");
 const testsEmpty = document.getElementById("testsEmpty");
@@ -784,9 +785,27 @@ function renderTests(entryId, testsRequired) {
   lastTestsRequired = testsRequired;
   testsSection.dataset.entryId = entryId;
   testsList.innerHTML = "";
-  testsEmpty.classList.toggle("hidden", testsRequired.length > 0);
+
+  // A confirmed item already shown as a ticked box in the table above
+  // (renderTestTableUI(), called at the end of this function) isn't
+  // ALSO listed here — same authoritative tests_required, just shown
+  // once, not twice. Ambiguous/unrecognized items (which the table can't
+  // represent at all) always still show here regardless.
+  const isInTable = (item) => item.status === "confirmed" && isCanonicalNameInTable(item.normalized);
+  const visibleCount = testsRequired.filter((item) => !isInTable(item)).length;
+  if (testsRequired.length === 0) {
+    testsEmpty.textContent = "No tests required were recognized.";
+    testsEmpty.classList.remove("hidden");
+  } else if (visibleCount === 0) {
+    testsEmpty.textContent = "Every recognized test is shown ticked in the table above.";
+    testsEmpty.classList.remove("hidden");
+  } else {
+    testsEmpty.classList.add("hidden");
+  }
 
   testsRequired.forEach((item, index) => {
+    if (isInTable(item)) return;
+
     const el = document.createElement("li");
     el.className = "match-item" + (item.status !== "confirmed" ? " " + item.status : "");
 
@@ -879,6 +898,31 @@ function renderTests(entryId, testsRequired) {
   });
 
   testsSection.classList.remove("hidden");
+
+  renderTestTableUI();
+}
+
+// Renders the interactive checkbox table (frontend/test-table-render.js)
+// from the SAME tests_required renderTests() above just rendered — kept
+// as its own function (rather than inlined) so a failed tick/untick
+// (see addResolvedTest()'s catch block) can re-render just the table to
+// revert the native checkbox's optimistic visual state.
+function renderTestTableUI() {
+  renderTestTable(testTableContainer, currentStructured.tests_required || [], {
+    readOnly: false,
+    onCheck: (cell) => addResolvedTest(cell.probe || cell.label, cell.label),
+    onUncheck: (cell, index) => {
+      if (index === -1) {
+        // Shouldn't normally happen (the box was ticked FROM a confirmed
+        // item), but never leave the checkbox in a state that doesn't
+        // match tests_required.
+        setStatus(`"${cell.label}" isn't recorded as a separate test.`);
+        renderTestTableUI();
+        return;
+      }
+      removeTestItem(index);
+    },
+  });
 }
 
 // Removing a test never calls the backend — nothing to re-normalize,
@@ -929,27 +973,39 @@ async function saveTestItemFix(index, newRaw) {
   }
 }
 
-async function addTest() {
-  const trimmed = addTestInput.value.trim();
-  if (!trimmed) return;
+// Shared by "+ Add test" AND the checkbox table's onCheck (see
+// renderTestTableUI()) — one path that resolves a raw test name,
+// appends it to tests_required, and refreshes everything downstream,
+// so neither surface can drift out of sync with the other. `displayLabel`
+// is what the status message names (the table passes the form's own
+// cell label; "+ Add test" passes the typed text).
+async function addResolvedTest(raw, displayLabel) {
+  const label = displayLabel || raw;
   try {
-    const item = await resolveOneTestName(trimmed);
+    const item = await resolveOneTestName(raw);
     currentStructured.tests_required = currentStructured.tests_required || [];
     currentStructured.tests_required.push(item);
-    addTestInput.value = "";
     await rebuildNormalizedText();
-    renderTests(currentEntryId, currentStructured.tests_required);
+    renderTests(currentEntryId, currentStructured.tests_required); // also re-renders the table
     await refreshSpecimenRequirements(); // also re-validates (see its own docstring)
     updateHistoryText(currentEntryId, currentNormalizedText);
     setStatus(
       item.status === "confirmed"
-        ? `Added "${trimmed}" → ${item.normalized}.`
-        : `Added "${trimmed}" — not recognized, check the spelling.`
+        ? `Added "${label}" → ${item.normalized}.`
+        : `Added "${label}" — not recognized, check the spelling.`
     );
   } catch (err) {
     console.error(err);
     setStatus("Failed to add test: " + err.message);
+    renderTestTableUI(); // revert the checkbox's optimistic checked state
   }
+}
+
+async function addTest() {
+  const trimmed = addTestInput.value.trim();
+  if (!trimmed) return;
+  addTestInput.value = "";
+  await addResolvedTest(trimmed);
 }
 
 addTestBtn.addEventListener("click", addTest);

@@ -1089,3 +1089,105 @@ h1 {
   margin-top: 0.2rem;
   flex-shrink: 0;
 }
+
+/* ---- Interactive pathology test table (frontend/test-table-render.js) —
+   a DENSE multi-column grid, like the paper form it's modeled on: narrow
+   category columns side by side in one row, not full-width cards stacked
+   into a long list. Deliberately allowed to scroll sideways on a narrow
+   screen (same as the printed form would if shrunk to fit) rather than
+   collapsing to one column. ---- */
+
+.test-table-container,
+.test-table-section {
+  margin-bottom: 0.75rem;
+}
+
+.test-table-scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  padding-bottom: 0.3rem;
+  margin: 0 -1rem;
+  padding-left: 1rem;
+  padding-right: 1rem;
+}
+
+.test-table-grid {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 0.45rem;
+  width: max-content;
+}
+
+.test-table-card {
+  flex: 0 0 150px;
+  width: 150px;
+  padding: 0.5rem 0.55rem;
+  background: var(--bg);
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+}
+
+.test-table-card-title {
+  margin: 0 0 0.35rem;
+  font-size: 0.6rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  line-height: 1.25;
+  color: var(--muted);
+}
+
+.test-table-cell-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.test-table-cell label {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.3rem;
+  font-size: 0.7rem;
+  line-height: 1.25;
+  cursor: pointer;
+}
+
+.test-table-cell label input[type="checkbox"] {
+  width: 13px;
+  height: 13px;
+  margin-top: 0.1rem;
+  flex-shrink: 0;
+}
+
+.test-table-cell input[type="checkbox"]:disabled {
+  cursor: default;
+}
+
+.test-table-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+/* A doctor-fillable detail next to a Specimen Type checkbox (e.g. which
+   fluid) — visual-only, never persisted; see test-table-data.js. */
+.test-table-specify-input {
+  width: 100%;
+  margin-left: 1rem;
+  padding: 0.12rem 0.3rem;
+  font: inherit;
+  font-size: 0.65rem;
+  color: var(--text);
+  background: var(--card);
+  border: 1px solid #e2e8f0;
+  border-radius: 5px;
+  box-sizing: border-box;
+}
+
+.test-table-specify-input::placeholder {
+  color: var(--muted);
+  font-style: italic;
+}

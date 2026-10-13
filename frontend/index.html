@@ -206,6 +206,14 @@
         <div class="field-block">
           <h3 class="field-block-title">Tests required</h3>
 
+          <!-- Interactive checkbox table mirroring the NHLS-style request
+               form (frontend/test-table-data.js / test-table-render.js) —
+               a second rendering of the SAME tests_required the list
+               below also shows; ticking/unticking here updates that one
+               authoritative list via the exact same endpoints "+ Add
+               test" and "x" already use. See app.js's renderTestTableUI(). -->
+          <div id="testTableContainer" class="test-table-container"></div>
+
           <section id="testsSection" class="matches hidden" aria-live="polite">
             <ul id="testsList" class="matches-list"></ul>
             <p id="testsEmpty" class="empty-msg hidden">No tests required were recognized.</p>
@@ -351,6 +359,8 @@
   <script src="config.js"></script>
   <script src="auth.js"></script>
   <script src="specimen-render.js"></script>
+  <script src="test-table-data.js"></script>
+  <script src="test-table-render.js"></script>
   <script src="app.js"></script>
   <script>
     // Register the service worker. This is what makes the app installable and

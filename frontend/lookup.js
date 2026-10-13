@@ -18,6 +18,9 @@ const resultLabelImage = document.getElementById("resultLabelImage");
 const resultSpecimenSection = document.getElementById("resultSpecimenSection");
 const resultSpecimenGroups = document.getElementById("resultSpecimenGroups");
 
+const resultTestTableSection = document.getElementById("resultTestTableSection");
+const resultTestTableContainer = document.getElementById("resultTestTableContainer");
+
 const doctorContactSection = document.getElementById("doctorContactSection");
 const doctorContactName = document.getElementById("doctorContactName");
 const doctorContactHpcsa = document.getElementById("doctorContactHpcsa");
@@ -163,6 +166,7 @@ async function runLookup(requestId) {
 
   resultSection.classList.add("hidden");
   resultSpecimenSection.classList.add("hidden");
+  resultTestTableSection.classList.add("hidden");
   doctorContactSection.classList.add("hidden");
   lookupStatus.textContent = "Looking up…";
 
@@ -199,6 +203,9 @@ async function runLookup(requestId) {
 
     const structured = record.structured || {};
     renderSpecimenGroups(structured.specimen_requirements || []);
+
+    renderTestTable(resultTestTableContainer, structured.tests_required || [], { readOnly: true });
+    resultTestTableSection.classList.remove("hidden");
   } catch (err) {
     console.error(err);
     lookupStatus.textContent = "Failed to reach the server: " + err.message;
