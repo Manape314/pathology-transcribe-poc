@@ -196,16 +196,41 @@ def parse_nhls_pdf(pdf_path: Path) -> list[dict]:
 # --------------------------------------------------------------------------- #
 # LOINC slimming
 # --------------------------------------------------------------------------- #
-# LOINC classes that aren't relevant to a pathology dictation context
-# (radiology, document/panel metadata, provocation-test panels, surveys).
-EXCLUDE_CLASSES_EXACT = {"RAD", "DOC.ONTOLOGY", "DOC.MISC", "CHAL"}
-EXCLUDE_CLASS_PREFIXES = ("PANEL.SURVEY",)
+# An explicit INCLUDE-list, not an exclude-list: among active/orderable LOINC
+# rows there are 267 distinct CLASS values (confirmed against the real
+# Loinc.csv), covering everything from radiology to survey instruments to
+# clinical exam findings — an allowlist of what this app's own test table
+# (frontend/test-table-data.js) actually covers is far more auditable than
+# trying to enumerate everything irrelevant among 267 possibilities. Kept:
+# chemistry, microbiology, drug/toxicology, serology, haematology,
+# coagulation, antibiotic susceptibility, cell markers/flow cytometry
+# (CD4 count etc.), blood bank/transfusion (Coombs/ABO/RH), anatomical
+# pathology, cytology, urinalysis, fertility hormones, tissue typing,
+# allergy (this app's own Immunology — Allergology section), and the
+# PANEL.* variant of each. Dropped: radiology, cardiology, pulmonary
+# function, ophthalmology, molecular/genetic panels (no corresponding
+# section in this app's test table), survey instruments, document/
+# administrative metadata, and clinical exam/history findings — none of
+# which this system's scope touches. Measured effect alone: only trims
+# the row count by ~9% (56,578 -> ~40,699) — on its own this is NOT what
+# fixes the out-of-memory crash (see matching.py's _load()/_build_word_index()
+# for the actual fix, which is a ~2x memory reduction); this filter is a
+# secondary quality/safety-margin improvement, and it's what's already
+# removing some cross-domain false-positive matches found in testing (e.g.
+# "BCG" previously colliding with an unrelated non-lab LOINC entry).
+INCLUDE_CLASSES_EXACT = {
+    "CHEM", "MICRO", "DRUG/TOX", "SERO", "HEM/BC", "COAG", "ABXBACT",
+    "CELLMARK", "BLDBK", "BLDBK.GENOTYPING", "PATH", "CYTO", "UA", "FERT",
+    "HLA", "ALLERGY", "HNA", "HPA",
+    "PANEL.CHEM", "PANEL.MICRO", "PANEL.DRUG/TOX", "PANEL.SERO",
+    "PANEL.HEM/BC", "PANEL.COAG", "PANEL.ABXBACT", "PANEL.CELLMARK",
+    "PANEL.BLDBK", "PANEL.BLDBK.GENOTYPE", "PANEL.ALLERGY", "PANEL.FERT",
+    "PANEL.HLA", "PANEL.UA", "PANEL.PATH",
+}
 
 
 def _is_excluded_class(class_value: str) -> bool:
-    return class_value in EXCLUDE_CLASSES_EXACT or class_value.startswith(
-        EXCLUDE_CLASS_PREFIXES
-    )
+    return class_value not in INCLUDE_CLASSES_EXACT
 
 
 def build_loinc_index(csv_path: Path) -> dict:

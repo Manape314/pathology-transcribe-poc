@@ -86,11 +86,12 @@ GROQ_API_KEY=<your-key> uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
 No model download on startup — there's nothing to cache, since no speech
-model runs in this process. Open <http://localhost:8000/> to see a
-health/config readout confirming the configured Groq model
+model runs in this process. Open <http://localhost:8000/api/health> to see
+a health/config readout confirming the configured Groq model
 (`transcription_model`), whether `GROQ_API_KEY` is actually set
 (`groq_api_key_configured`), and whether terminology matching data loaded
-(`terminology_loaded`).
+(`terminology_loaded`) — <http://localhost:8000/> itself now serves the
+actual frontend (see "Frontend — serve it" below).
 
 If you skip the terminology-matching setup below, transcription and field
 extraction still work fine — `tests_required` items just come back with
@@ -546,19 +547,30 @@ seconds.
 
 ## Frontend — serve it
 
-The frontend is static files; serve the `frontend/` folder with any static
-server:
+The backend serves the frontend itself now — `main.py` mounts the
+`frontend/` folder directly (`app.mount("/", StaticFiles(...))`, added
+after every API route so no API path is ever shadowed by a static file).
+So there's nothing separate to run: start the backend as above and open
+<http://localhost:8000/> — that's the actual app, not a health check
+(see `GET /api/health` below for that). One process, one address, same
+in local dev as in a hosted deployment.
+
+`frontend/config.js`'s `BACKEND_URL` reflects this — it's `""` (meaning
+"same origin as this page"), not a hardcoded host, so it never needs
+editing when the deployed address changes:
+
+```js
+const BACKEND_URL = "";
+```
+
+Only set it to an absolute URL if the frontend and backend are
+genuinely served from two different origins — e.g. if you want to run
+the frontend as its own static server during development:
 
 ```bash
 cd frontend
 python -m http.server 5173
 ```
-
-Then open <http://localhost:5173/>. Set the backend address in
-`frontend/config.js` — the ONE place it's configured; `app.js` and
-`lookup.js` both read this same global, so you never need to edit more
-than one file to point the whole frontend at a different backend:
-
 ```js
 const BACKEND_URL = "http://localhost:8000";
 ```
@@ -1171,10 +1183,12 @@ what makes a free hosted tier (e.g. Render Free) realistic for this
 prototype, with Groq handling the one actually heavy part (speech
 inference) and Neon (or any standard PostgreSQL host) handling storage.
 
-**Frontend** — still just static files, no build step; any static host
-works (Render Static Site, GitHub Pages, Netlify, ...). Point it at the
-hosted backend by editing the one line in `frontend/config.js` (see
-"Frontend — serve it" above).
+**Frontend** — served by this SAME backend process (see "Frontend — serve
+it" above), so no separate static host, deployment, or `config.js` edit is
+needed: one Render web service is the whole app, at one URL. (The frontend
+is still just static files underneath, with no build step — a separate
+static host remains an option if you ever want to split them again; set
+`frontend/config.js`'s `BACKEND_URL` to an absolute URL in that case.)
 
 **Database migration** — `backend/data/print_records.db` (the project's
 original local SQLite store) is never deleted or overwritten by any of

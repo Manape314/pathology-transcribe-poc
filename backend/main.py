@@ -46,6 +46,7 @@ import tempfile
 
 from fastapi import Depends, FastAPI, File, Header, HTTPException, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sqlalchemy.exc import IntegrityError, OperationalError
 
@@ -92,9 +93,12 @@ app.add_middleware(
 )
 
 
-@app.get("/")
+@app.get("/api/health")
 def health():
-    """Quick health/config check — open this in a browser to confirm it's up."""
+    """Quick health/config check — open this in a browser to confirm it's up.
+    Moved off bare "/" so that path is free for the frontend's index.html
+    (see the StaticFiles mount at the bottom of this file) — visiting the
+    deployed URL now shows the actual app, not a JSON blob."""
     return {
         "status": "ok",
         "transcription_provider": "groq",
@@ -577,3 +581,21 @@ async def transcribe(file: UploadFile = File(...)):
     finally:
         # Always clean up the temp file, even if transcription raises.
         os.remove(tmp_path)
+
+
+# --------------------------------------------------------------------------- #
+# Serving the frontend from this SAME process/origin — added so a single
+# hosted service (e.g. one Render web service) is enough for the whole app:
+# no separate static host, no CORS needed between frontend and backend (same
+# origin), and no tunnel/address to keep re-sharing, since whatever this
+# backend's URL is, the frontend is automatically served from it too.
+#
+# Mounted at "/" but placed LAST, after every @app.get/@app.post route above
+# — Starlette checks routes in registration order, so every API path still
+# matches its own handler first; only a request that matches nothing above
+# (i.e. an actual frontend file) falls through to here. html=True makes "/"
+# serve frontend/index.html automatically, exactly like a plain static host
+# would; frontend/lookup.html, app.js, service-worker.js etc. are all served
+# the same way, by their own path, unchanged from how they're named today.
+# --------------------------------------------------------------------------- #
+app.mount("/", StaticFiles(directory="../frontend", html=True), name="frontend")

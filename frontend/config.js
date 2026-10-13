@@ -1,9 +1,14 @@
 // The ONE place the backend's address is configured — loaded before
 // app.js, auth.js, and lookup.js, which all call backendFetch() below
-// instead of the bare fetch(). Change this single line to switch between
-// local development and a hosted backend; never hardcode BACKEND_URL
-// separately in any other file.
-const BACKEND_URL = "https://retouch-kick-strike.ngrok-free.dev";
+// instead of the bare fetch(). Empty string = same origin as this page
+// itself, which is correct now that main.py serves this frontend directly
+// (app.mount("/", StaticFiles(...))) — frontend and backend are the SAME
+// origin wherever this is deployed, so a relative path already reaches the
+// right place with no hardcoded host to keep updating. Only set this to an
+// absolute URL (e.g. during local development with the frontend and backend
+// run as two separate processes on different ports) if they're genuinely
+// NOT the same origin.
+const BACKEND_URL = "";
 
 // Every call to the backend goes through this instead of bare fetch() —
 // ngrok's free tier injects an HTML "you're about to visit..." warning

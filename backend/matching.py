@@ -24,6 +24,8 @@ the whole-transcript candidate generation — were removed rather than left
 as dead code inviting the unsafe path to get wired back in.
 """
 
+import array
+import collections
 import json
 import re
 from pathlib import Path
@@ -55,11 +57,18 @@ _STOPWORDS = {
 _READY = False
 _NHLS_TESTS: list[dict] = []
 _NHLS_CHOICES: list[str] = []
-_NHLS_WORD_INDEX: dict[str, set[int]] = {}
+_NHLS_WORD_INDEX: dict[str, array.array] = {}
 _LOINC_TESTS: list[dict] = []
-_LOINC_SYNONYMS: list[dict] = []
-_LOINC_CHOICES: list[str] = []
-_LOINC_WORD_INDEX: dict[str, set[int]] = {}
+# Synonyms are NOT kept as a list of {"text", "test_index"} dicts — at 1.1M
+# entries, the per-dict object overhead alone measured ~350MB. Two parallel
+# structures (a plain string list, reused as _LOINC_CHOICES below — the
+# fuzzy matcher's "choices" argument either way — and a compact C-array of
+# ints) hold the exact same information for a fraction of the memory. See
+# _load()'s object_hook for how these are built without ever materializing
+# the dicts in the first place.
+_LOINC_CHOICES: list[str] = []  # choices[i] == synonym i's text
+_LOINC_SYNONYM_TEST_IDX: array.array = array.array("i")  # [i] == synonym i's test index
+_LOINC_WORD_INDEX: dict[str, array.array] = {}
 
 
 def _stem(word: str) -> str:
@@ -75,19 +84,26 @@ def _stem(word: str) -> str:
     return word
 
 
-def _build_word_index(choices: list[str]) -> dict[str, set[int]]:
-    index: dict[str, set[int]] = {}
+def _build_word_index(choices: list[str]) -> dict[str, array.array]:
+    # Built with plain lists (cheaper peak memory than sets while growing —
+    # measured ~190MB vs ~276MB peak for the full LOINC corpus), deduped and
+    # frozen into compact array.array('i', ...) postings only once at the
+    # end. A set[int] per word costs roughly 5x an array.array('i') of the
+    # same ints (measured: ~142MB vs ~30MB extra for LOINC's word index) —
+    # the per-element hash-table/boxed-int overhead that's irrelevant once
+    # the index is just being read from, never mutated, at query time.
+    building: dict[str, list[int]] = collections.defaultdict(list)
     for i, text in enumerate(choices):
         for word in _WORD_RE.findall(text.lower()):
             if len(word) < 3 or word in _STOPWORDS:
                 continue
-            index.setdefault(_stem(word), set()).add(i)
-    return index
+            building[_stem(word)].append(i)
+    return {word: array.array("i", sorted(set(postings))) for word, postings in building.items()}
 
 
 def _load():
     global _READY, _NHLS_TESTS, _NHLS_CHOICES, _NHLS_WORD_INDEX
-    global _LOINC_TESTS, _LOINC_SYNONYMS, _LOINC_CHOICES, _LOINC_WORD_INDEX
+    global _LOINC_TESTS, _LOINC_CHOICES, _LOINC_SYNONYM_TEST_IDX, _LOINC_WORD_INDEX
 
     nhls_path = DATA_DIR / "nhls_tests.json"
     loinc_path = DATA_DIR / "loinc_terms.json"
@@ -103,16 +119,36 @@ def _load():
     _NHLS_CHOICES = [t["test_name"] for t in _NHLS_TESTS]
     _NHLS_WORD_INDEX = _build_word_index(_NHLS_CHOICES)
 
-    loinc_index = json.loads(loinc_path.read_text(encoding="utf-8"))
+    # Synonyms are the one part of this file that's too big (1.1M entries)
+    # to parse the ordinary way — json.loads() would materialize 1.1M
+    # {"text":..., "test_index":...} dicts, measured at ~350MB just for
+    # that. object_hook intercepts every dict the parser builds; one
+    # shaped like a synonym gets split into the two module-level
+    # structures below and discarded (returning None) instead of kept, so
+    # those 1.1M dicts are never actually materialized, not built-then-
+    # freed. "tests" entries (and the top-level {"tests":..., "synonyms":...}
+    # wrapper) don't match the synonym shape, so they pass through
+    # untouched, exactly as plain json.loads would have returned them.
+    synonym_texts: list[str] = []
+    synonym_test_idx = array.array("i")
+
+    def _hook(obj):
+        if len(obj) == 2 and "text" in obj and "test_index" in obj:
+            synonym_texts.append(obj["text"])
+            synonym_test_idx.append(obj["test_index"])
+            return None
+        return obj
+
+    loinc_index = json.loads(loinc_path.read_text(encoding="utf-8"), object_hook=_hook)
     _LOINC_TESTS = loinc_index["tests"]
-    _LOINC_SYNONYMS = loinc_index["synonyms"]
-    _LOINC_CHOICES = [s["text"] for s in _LOINC_SYNONYMS]
+    _LOINC_CHOICES = synonym_texts
+    _LOINC_SYNONYM_TEST_IDX = synonym_test_idx
     _LOINC_WORD_INDEX = _build_word_index(_LOINC_CHOICES)
 
     _READY = True
     print(
         f"matching: loaded {len(_NHLS_TESTS)} NHLS tests, "
-        f"{len(_LOINC_TESTS)} LOINC tests ({len(_LOINC_SYNONYMS)} synonyms). Ready."
+        f"{len(_LOINC_TESTS)} LOINC tests ({len(_LOINC_CHOICES)} synonyms). Ready."
     )
 
 
@@ -122,17 +158,24 @@ except Exception as exc:  # noqa: BLE001 - matching must never take down transcr
     print(f"matching: failed to load terminology data ({exc}). Matching disabled.")
 
 
-def _candidate_indices(phrase: str, word_index: dict[str, set[int]]) -> set[int]:
+def _candidate_indices(phrase: str, word_index: dict[str, array.array]) -> set[int]:
     """
     Union of choice indices sharing at least one significant word with
     `phrase`, via the prebuilt inverted index. Scoring all ~1.1M LOINC
     synonyms per query (confirmed by benchmarking) takes well over a
     minute — this prefilter is what makes matching fast enough to run
     inline on every transcription.
+
+    Postings are stored compactly (array.array), not as sets — turning one
+    word's postings into a set here is a per-query cost against a single
+    word's hit list, nothing like the steady-state memory cost storing all
+    of them as sets would be.
     """
     indices: set[int] = set()
     for word in _WORD_RE.findall(phrase):
-        indices |= word_index.get(_stem(word), set())
+        postings = word_index.get(_stem(word))
+        if postings:
+            indices |= set(postings)
     return indices
 
 
@@ -199,8 +242,7 @@ def best_single_match(phrase: str, min_score: float = 88.0) -> dict | None:
     if loinc_hit is not None:
         _, score, idx = loinc_hit
         if score >= min_score:
-            synonym = _LOINC_SYNONYMS[idx]
-            test = _LOINC_TESTS[synonym["test_index"]]
+            test = _LOINC_TESTS[_LOINC_SYNONYM_TEST_IDX[idx]]
             best = {
                 "source": "loinc",
                 "name": test["long_common_name"],
