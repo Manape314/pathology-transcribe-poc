@@ -14,7 +14,7 @@
 // again. The cache is kept up to date opportunistically (whatever
 // succeeds over the network gets cached for next time offline), not by
 // a fixed pre-cache list.
-const CACHE = "path-dictate-v9";
+const CACHE = "path-dictate-v10";
 const SHELL = [
   "./",
   "./index.html",

@@ -38,5 +38,9 @@ pillow>=10.1,<11.0
 sqlalchemy>=2.0
 psycopg[binary]>=3.1
 
+# Fills the NHLS request-form PDF template from a stored request (see
+# backend/request_form.py) — pure Python, no system binaries needed.
+pypdf>=5.0
+
 # Test suite (backend/tests/) — not needed to run the app itself.
 pytest>=8.0

@@ -32,6 +32,7 @@ const blockPriority = document.getElementById("blockPriority");
 const printSection = document.getElementById("printSection");
 const doneBtn = document.getElementById("doneBtn");
 const retryPrintBtn = document.getElementById("retryPrintBtn");
+const requestFormBtn = document.getElementById("requestFormBtn");
 const printStatus = document.getElementById("printStatus");
 const printLabelImage = document.getElementById("printLabelImage");
 
@@ -1058,6 +1059,7 @@ function showPrintSection() {
   printStatus.textContent = "";
   printLabelImage.classList.add("hidden");
   printLabelImage.removeAttribute("src");
+  requestFormBtn.classList.add("hidden");
   retryPrintBtn.classList.add("hidden");
   stopPrintStatusPolling();
   printSection.classList.remove("hidden");
@@ -1068,6 +1070,7 @@ function hidePrintSection() {
   printStatus.textContent = "";
   printLabelImage.classList.add("hidden");
   printLabelImage.removeAttribute("src");
+  requestFormBtn.classList.add("hidden");
   retryPrintBtn.classList.add("hidden");
   stopPrintStatusPolling();
 }
@@ -1142,6 +1145,7 @@ doneBtn.addEventListener("click", async () => {
 
     const data = await res.json();
     currentRequestId = data.request_id;
+    requestFormBtn.classList.remove("hidden");
     printStatus.textContent = `Request submitted — Request ID: ${data.request_id}. Waiting for printer…`;
 
     // Two identical barcodes for this request: the one a print agent
@@ -1166,6 +1170,10 @@ doneBtn.addEventListener("click", async () => {
     // failed submit must not leave Done clickable past validation.
     refreshValidation();
   }
+});
+
+requestFormBtn.addEventListener("click", () => {
+  if (currentRequestId) openRequestForm(currentRequestId, printStatus);
 });
 
 retryPrintBtn.addEventListener("click", async () => {

@@ -160,6 +160,11 @@ copyNumberBtn.addEventListener("click", async () => {
 // and the automatic QR-scan lookup (new URLSearchParams(location.search)
 // below), so there's exactly one place that talks to /print-lookup, not
 // two that could drift apart.
+let currentLookupId = null;
+document.getElementById("requestFormBtn").addEventListener("click", () => {
+  if (currentLookupId) openRequestForm(currentLookupId, document.getElementById("requestFormStatus"));
+});
+
 async function runLookup(requestId) {
   if (!requestId) return;
   requestIdInput.value = requestId;
@@ -200,6 +205,9 @@ async function runLookup(requestId) {
     // staff need to confirm it or reprint a damaged label.
     resultLabelImage.src = record.label_image || "";
     resultSection.classList.remove("hidden");
+    currentLookupId = requestId;
+    document.getElementById("requestFormStatus").textContent = "";
+    document.getElementById("requestFormStatus").classList.add("hidden");
 
     const structured = record.structured || {};
     renderSpecimenGroups(structured.specimen_requirements || []);

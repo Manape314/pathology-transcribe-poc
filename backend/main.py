@@ -58,6 +58,7 @@ import label_printing
 import matching
 import print_jobs
 import print_records
+import request_form
 import specimen_mapping
 import terminology_normalize
 import transcription
@@ -395,6 +396,33 @@ def print_lookup(request_id: str):
     if record is None:
         raise HTTPException(status_code=404, detail="No request found with that ID")
     return record
+
+
+@app.get("/request-form/{request_id}")
+def request_form_pdf(request_id: str):
+    """The finalized request as the NHLS "Specimen Request Form" PDF, filled
+    in from the stored record (see request_form.py for exactly which form
+    fields and test tick boxes are populated — only what the web page
+    captures; everything else is left blank). Same access model as
+    /print-lookup: unauthenticated, the request ID is the key — see the
+    README note there before using real patient data."""
+    if not _REQUEST_ID_RE.match(request_id):
+        raise HTTPException(status_code=400, detail="Malformed request ID")
+    try:
+        record = print_records.get_record(request_id)
+    except OperationalError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Could not reach the request database — try again shortly.",
+        ) from exc
+    if record is None:
+        raise HTTPException(status_code=404, detail="No request found with that ID")
+    pdf_bytes = request_form.build_request_form(record)
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="request-form-{request_id}.pdf"'},
+    )
 
 
 class SpecimenRequirementsRequest(BaseModel):
