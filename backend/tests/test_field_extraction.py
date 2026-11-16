@@ -1,3 +1,8 @@
+import re
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+import field_extraction
 from field_extraction import build_normalized_text, extract_fields
 
 TRANSCRIPT = (
@@ -24,11 +29,17 @@ def test_full_example_transcript():
     assert result["date_of_birth_status"] == "ambiguous"
     assert result["date_of_birth_raw"] == "1998-8-August 14th, 6 May"
 
-    # Deterministic date/time normalization.
-    assert result["date_requested"] == "2026-09-22"
+    # date_requested/time_requested are no longer taken from dictation —
+    # the server's own clock is authoritative regardless of what's said
+    # (see test_request_datetime_auto_populated_and_overrides_dictation
+    # for the exact value/timezone checks); just confirm the shape here.
+    assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", result["date_requested"])
     assert result["date_requested_status"] == "confirmed"
-    assert result["time_requested"] == "14:35"
+    assert re.fullmatch(r"\d{2}:\d{2}", result["time_requested"])
     assert result["time_requested_status"] == "confirmed"
+
+    # Date/time COLLECTED (specimen collection) are untouched by this —
+    # still dictation-sourced, deterministic normalization.
     assert result["date_collected"] == "2026-09-22"
     assert result["date_collected_status"] == "confirmed"
     assert result["time_collected"] == "14:40"
@@ -81,9 +92,14 @@ def test_build_normalized_text_substitutes_confident_values():
         in normalized_text
     )
 
-    # Confident date/time substitutions.
-    assert "Date requested: 2026-09-22" in normalized_text
-    assert "Time requested: 2:35 PM" in normalized_text
+    # date_requested/time_requested now come from the server clock, not
+    # dictation — check the shape, not an exact value (see
+    # test_request_datetime_auto_populated_and_overrides_dictation).
+    assert re.search(r"Date requested: \d{4}-\d{2}-\d{2}", normalized_text)
+    assert re.search(r"Time requested: \d{1,2}:\d{2} (AM|PM)", normalized_text)
+
+    # Date/time of COLLECTION (specimen collection) are untouched by this —
+    # still the dictated, deterministic substitution.
     assert "Date of collection: 2026-09-22" in normalized_text
     assert "Time of collection: 2:40 PM" in normalized_text
 
@@ -229,14 +245,51 @@ def test_specimen_requirements_excludes_ambiguous_tests():
 
 
 def test_empty_transcript_returns_empty_structure():
+    # Truly empty (e.g. silence/no audio) is a no-op, not a request being
+    # created — date_requested/time_requested are NOT stamped here either.
     result = extract_fields("")
     assert result["unparsed_text"] == []
     assert "patient_name" not in result
+    assert "date_requested" not in result
 
 
 def test_transcript_with_no_recognized_labels_is_all_unparsed():
     result = extract_fields("just some random unrelated speech")
     assert result["unparsed_text"] == ["just some random unrelated speech"]
+    assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", result["date_requested"])
+    assert result["date_requested_status"] == "confirmed"
+
+
+def test_request_datetime_auto_populated_and_overrides_dictation(monkeypatch):
+    # 22:30 UTC on 17 Nov 2026 is 00:30 SAST on 18 Nov 2026 (UTC+2, no DST)
+    # — deliberately a day-rollover case, per the near-midnight requirement.
+    fixed_utc = datetime(2026, 11, 17, 22, 30, tzinfo=ZoneInfo("UTC"))
+
+    class _FixedDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed_utc.astimezone(tz) if tz else fixed_utc
+
+    monkeypatch.setattr(field_extraction, "datetime", _FixedDatetime)
+
+    # TRANSCRIPT dictates "Date requested, 2026-22nd September. Time
+    # requested, 25 minutes to 3 p.m." — the real clock must win anyway.
+    result = extract_fields(TRANSCRIPT)
+    assert result["date_requested"] == "2026-11-18"
+    assert result["date_requested_status"] == "confirmed"
+    assert result["time_requested"] == "00:30"
+    assert result["time_requested_status"] == "confirmed"
+
+    # A truly empty transcript (no audio/silence) is a no-op — nothing is
+    # stamped, matching the existing "empty in, empty out" contract.
+    empty_result = extract_fields("")
+    assert "date_requested" not in empty_result
+
+    # But it's populated as soon as the doctor says ANYTHING, even if none
+    # of it matches a recognized label.
+    no_label_result = extract_fields("just some random unrelated speech")
+    assert no_label_result["date_requested"] == "2026-11-18"
+    assert no_label_result["time_requested"] == "00:30"
 
 
 def test_reason_for_request_field_extracted():

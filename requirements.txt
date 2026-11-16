@@ -42,5 +42,12 @@ psycopg[binary]>=3.1
 # backend/request_form.py) — pure Python, no system binaries needed.
 pypdf>=5.0
 
+# The request date/time are set from the server's own clock, converted to
+# Africa/Johannesburg via the stdlib's zoneinfo (see
+# backend/field_extraction.py's _apply_request_datetime). zoneinfo needs an
+# IANA tzdata database on disk; most Linux images ship one, but this pure-
+# Python fallback guarantees it on a stripped-down base image too.
+tzdata>=2024.1
+
 # Test suite (backend/tests/) — not needed to run the app itself.
 pytest>=8.0

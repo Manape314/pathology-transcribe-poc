@@ -11,6 +11,10 @@ Every line of the field-extraction/normalization code still runs for real
 through the actual FastAPI route handler.
 """
 
+import re
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -65,8 +69,9 @@ def test_transcribe_endpoint_raw_vs_normalized_and_structured(monkeypatch):
     assert "Full Blood Count (FBC)" in normalized_text
     assert "C-reactive protein (CRP)" in normalized_text
     assert "Urea and Electrolytes (U and E)" in normalized_text
+    # Date/time of collection are still dictation-sourced, deterministic.
     assert "2026-09-22" in normalized_text
-    assert "2:35 PM" in normalized_text
+    assert "2:40 PM" in normalized_text
 
     structured = data["structured"]
 
@@ -74,8 +79,14 @@ def test_transcribe_endpoint_raw_vs_normalized_and_structured(monkeypatch):
     assert structured["date_of_birth_status"] == "ambiguous"
     assert structured["date_of_birth_raw"] == "1998-8-August 14th, 6 May"
 
-    assert structured["date_requested"] == "2026-09-22"
-    assert structured["time_requested"] == "14:35"
+    # date_requested/time_requested now come from the server's own clock,
+    # not the dictated "2026-22nd September"/"25 minutes to 3 p.m." — see
+    # test_request_datetime_comes_from_server_clock_not_dictation below for
+    # the exact value/timezone check.
+    assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", structured["date_requested"])
+    assert structured["date_requested_status"] == "confirmed"
+    assert re.fullmatch(r"\d{2}:\d{2}", structured["time_requested"])
+    assert structured["time_requested_status"] == "confirmed"
     assert structured["date_collected"] == "2026-09-22"
     assert structured["time_collected"] == "14:40"
 
@@ -99,6 +110,43 @@ def test_transcribe_endpoint_raw_vs_normalized_and_structured(monkeypatch):
     assert "resolved_terms" in structured["medication"]
     assert structured["medication"]["resolved_terms"][0]["normalized_term"] == "As Needed"
     assert "As Needed (PRN)" in structured["medication"]["value"]
+
+
+def test_request_datetime_comes_from_server_clock_not_dictation(monkeypatch):
+    # End-to-end through the real /transcribe route: date_requested/
+    # time_requested must reflect the server's clock, converted to SAST,
+    # regardless of what was dictated. 22:30 UTC on 17 Nov 2026 is 00:30
+    # SAST on 18 Nov 2026 (UTC+2, no DST) — a deliberate day-rollover case.
+    import field_extraction
+
+    fixed_utc = datetime(2026, 11, 17, 22, 30, tzinfo=ZoneInfo("UTC"))
+
+    class _FixedDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed_utc.astimezone(tz) if tz else fixed_utc
+
+    monkeypatch.setattr(field_extraction, "datetime", _FixedDatetime)
+
+    client = _transcribe_with(monkeypatch, TRANSCRIPT)
+    response = client.post(
+        "/transcribe",
+        files={"file": ("recording.webm", b"fake-audio-bytes", "audio/webm")},
+    )
+
+    assert response.status_code == 200
+    structured = response.json()["structured"]
+
+    # TRANSCRIPT dictates "Date requested, 2026-22nd September. Time
+    # requested, 25 minutes to 3 p.m." — the real clock wins anyway.
+    assert structured["date_requested"] == "2026-11-18"
+    assert structured["date_requested_status"] == "confirmed"
+    assert structured["time_requested"] == "00:30"
+    assert structured["time_requested_status"] == "confirmed"
+
+    # Specimen collection date/time are untouched by this.
+    assert structured["date_collected"] == "2026-09-22"
+    assert structured["time_collected"] == "14:40"
 
 
 def test_transcribe_endpoint_does_not_suggest_unrelated_tests_from_prose(monkeypatch):

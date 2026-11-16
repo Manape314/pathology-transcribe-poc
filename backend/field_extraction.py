@@ -29,11 +29,19 @@ disappear into an unrelated field.
 """
 
 import re
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import clinical_terminology
 import specimen_mapping
 from datetime_normalize import normalize_date, normalize_time
 from terminology_normalize import normalize_tests_required
+
+# Request date/time are no longer dictated — the server's own clock is
+# authoritative (see _current_sast_datetime, used at the end of
+# extract_fields()). South Africa has one timezone, no DST, so this is a
+# fixed IANA zone, not something derived from the request.
+_SAST = ZoneInfo("Africa/Johannesburg")
 
 # (field_key, pattern matching the label phrase itself — a following
 # comma/colon, within a short lookahead, is what actually confirms a match
@@ -212,12 +220,31 @@ def _store_field(result: dict, field_key: str, raw_value: str) -> None:
     result[field_key] = {"raw": raw_value, "value": raw_value, "status": "extracted"}
 
 
+def _apply_request_datetime(result: dict) -> None:
+    """Sets date_requested/time_requested to the server's current South
+    African time, always overriding whatever _store_field may already have
+    put there from dictation — the doctor is no longer required (or
+    expected) to dictate these, so the real submission-time clock is
+    authoritative regardless. Applied on every return path of
+    extract_fields(), including the empty-transcript ones, so the fields
+    are populated even when nothing was dictated at all."""
+    now = datetime.now(_SAST)
+    result["date_requested"] = now.strftime("%Y-%m-%d")
+    result["date_requested_status"] = "confirmed"
+    result["time_requested"] = now.strftime("%H:%M")
+    result["time_requested_status"] = "confirmed"
+
+
 def extract_fields(transcript: str) -> dict:
     text = (transcript or "").strip()
     result: dict = {}
     unparsed: list[str] = []
 
     if not text:
+        # Truly empty (e.g. silence/no audio) is a no-op, not a request
+        # being created — the existing "empty in, empty out" contract
+        # (see test_transcribe_endpoint_empty_text_has_empty_structured)
+        # stays intact; nothing is stamped here.
         result["unparsed_text"] = unparsed
         return result
 
@@ -226,6 +253,7 @@ def extract_fields(transcript: str) -> dict:
     if not matches:
         unparsed.append(text)
         result["unparsed_text"] = unparsed
+        _apply_request_datetime(result)
         return result
 
     leading = text[: matches[0][0]].strip(" .,:")
@@ -288,6 +316,7 @@ def extract_fields(transcript: str) -> dict:
         )
 
     result["unparsed_text"] = unparsed
+    _apply_request_datetime(result)
     return result
 
 
