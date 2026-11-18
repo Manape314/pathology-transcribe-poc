@@ -75,10 +75,13 @@ const BLOCK_DEFS = [
     ["clinical_history", "Clinical history", "clinical"],
     ["provisional_diagnosis", "Provisional diagnosis", "clinical"],
   ]],
-  // Priority ONLY — no date/time requested in this block (explicit
-  // requirement; never add them back in without being asked).
+  // Priority, plus the server-stamped request date/time (kind "readonly"
+  // — see field_extraction.py's _apply_request_datetime; the doctor no
+  // longer dictates these, so they're shown but never editable here).
   [blockPriority, [
     ["priority", "Priority", "plain"],
+    ["date_requested", "Date requested", "readonly"],
+    ["time_requested", "Time requested", "readonly"],
   ]],
 ];
 
@@ -113,6 +116,7 @@ let currentRawText = "";
 let showingRaw = false;
 let currentStructured = {}; // the full structured object from the last transcription
 let currentEntryId = null; // the History entry id the current transcript is saved under
+let formLocked = false; // set once /print-label succeeds; see applyFormLock()
 
 let mediaRecorder = null; // the active MediaRecorder, when recording
 let chunks = []; // audio Blob pieces collected during a recording
@@ -457,6 +461,14 @@ function renderBlockField(dl, key, label, kind) {
     return;
   }
 
+  if (kind === "readonly") {
+    const span = document.createElement("span");
+    span.className = "field-readonly";
+    span.textContent = currentStructured[key] || "—";
+    appendFieldRow(dl, label, span);
+    return;
+  }
+
   if (kind === "clinical") {
     const field = currentStructured[key];
     const raw = (field && field.raw) || "";
@@ -543,7 +555,28 @@ function refreshValidation() {
   }
 
   doneBtn.disabled =
-    !currentEntryId || incomplete.length > 0 || !specimenConfirmCheckbox.checked;
+    formLocked || !currentEntryId || incomplete.length > 0 || !specimenConfirmCheckbox.checked;
+
+  applyFormLock();
+}
+
+// Once the barcode/label for this request has been generated (/print-label
+// succeeded), the request is final: every field becomes non-editable and
+// stays that way — there's no unlock, the only way to change anything is
+// to record a brand-new request (resetTranscriptView() clears the flag).
+// Re-applied after every render (called from refreshValidation, which
+// already runs after every mutation/re-render in this file), since
+// renderAllBlocks/renderTests/renderTestTableUI rebuild these elements
+// from scratch and a freshly-created input is never disabled by default.
+function applyFormLock() {
+  if (!formLocked) return;
+  const selector = [
+    "#blocksContainer input", "#blocksContainer textarea", "#blocksContainer button",
+    "#testsSection input", "#testsSection textarea", "#testsSection button",
+    "#specimenSection input", "#specimenSection button",
+    "#testTableContainer input", "#testTableContainer button",
+  ].join(", ");
+  document.querySelectorAll(selector).forEach((el) => { el.disabled = true; });
 }
 
 specimenConfirmCheckbox.addEventListener("change", refreshValidation);
@@ -596,6 +629,7 @@ function resetTranscriptView() {
   currentEntryId = null;
   showingRaw = false;
   specimenConfirmCheckbox.checked = false;
+  formLocked = false;
   updateTranscriptView();
 }
 
@@ -910,7 +944,7 @@ function renderTests(entryId, testsRequired) {
 // revert the native checkbox's optimistic visual state.
 function renderTestTableUI() {
   renderTestTable(testTableContainer, currentStructured.tests_required || [], {
-    readOnly: false,
+    readOnly: formLocked,
     onCheck: (cell) => addResolvedTest(cell.probe || cell.label, cell.label),
     onUncheck: (cell, index) => {
       if (index === -1) {
@@ -1145,6 +1179,7 @@ doneBtn.addEventListener("click", async () => {
 
     const data = await res.json();
     currentRequestId = data.request_id;
+    formLocked = true;
     requestFormBtn.classList.remove("hidden");
     printStatus.textContent = `Request submitted — Request ID: ${data.request_id}. Waiting for printer…`;
 

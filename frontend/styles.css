@@ -948,6 +948,23 @@ h1 {
   background: #fffbeb;
 }
 
+.field-input:disabled,
+.field-textarea:disabled {
+  color: var(--muted);
+  background: #f1f5f9;
+  cursor: not-allowed;
+}
+
+/* The server-stamped request date/time (BLOCK_DEFS kind "readonly") —
+   never an input, so it can't be mistaken for an editable field. */
+.field-readonly {
+  display: block;
+  padding: 0.45rem 0.6rem;
+  font-size: 0.9rem;
+  line-height: 1.4;
+  color: var(--muted);
+}
+
 .ambiguous-chip-list {
   margin-top: 0.4rem;
   display: flex;
