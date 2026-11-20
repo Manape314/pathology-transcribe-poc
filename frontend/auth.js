@@ -208,8 +208,9 @@ logoutBtn.addEventListener("click", () => {
 });
 
 // --- "Add to home screen" prompt --------------------------------------------
-// Shown once, right after a successful login/registration, so it doesn't get
-// in the way of the login screen itself.
+// Shown after every successful login/registration (not just once) until the
+// app is actually installed/running standalone -- Dismiss only hides it for
+// the current visit, it's never permanently suppressed.
 
 const installBanner = document.getElementById("installPrompt");
 const installText = document.getElementById("installText");
@@ -217,7 +218,6 @@ const installBtn = document.getElementById("installBtn");
 const installDismissBtn = document.getElementById("installDismiss");
 
 let deferredInstallPrompt = null;
-const INSTALL_DISMISSED_KEY = "pathdictate_install_dismissed";
 
 window.addEventListener("beforeinstallprompt", (e) => {
   e.preventDefault();
@@ -240,7 +240,7 @@ function hideInstallBanner() {
 }
 
 function maybeOfferInstall() {
-  if (isStandalone() || localStorage.getItem(INSTALL_DISMISSED_KEY)) {
+  if (isStandalone()) {
     hideInstallBanner();
     return;
   }
@@ -250,8 +250,12 @@ function maybeOfferInstall() {
     installBtn.classList.remove("hidden");
     installBanner.classList.remove("hidden");
   } else if (isIos()) {
+    // iOS Safari has no installable-app API at all (no beforeinstallprompt)
+    // -- Apple gives web pages no way to trigger "Add to Home Screen"
+    // programmatically, so there's no button that could actually do it.
+    // This is the real, only install step on iPhone/iPad.
     installText.textContent =
-      "Install this app: tap Share, then \"Add to Home Screen\".";
+      "Install this app: tap the Share icon, then \"Add to Home Screen\".";
     installBtn.classList.add("hidden");
     installBanner.classList.remove("hidden");
   } else {
@@ -268,7 +272,6 @@ installBtn.addEventListener("click", async () => {
 });
 
 installDismissBtn.addEventListener("click", () => {
-  localStorage.setItem(INSTALL_DISMISSED_KEY, "1");
   hideInstallBanner();
 });
 

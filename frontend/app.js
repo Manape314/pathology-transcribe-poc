@@ -510,6 +510,17 @@ async function saveClinicalField(key, newRawText) {
   }
 }
 
+// Mirrors field_extraction.py's _to_12h_ampm() — a confirmed time is
+// always stored as 24h "HH:MM" internally, but shown here as "H:MM AM/PM"
+// so it's never ambiguous on screen, whether it came from dictation, the
+// server-clock default, or a previous edit.
+function to12hAmPm(value24h) {
+  const [hour, minute] = value24h.split(":").map(Number);
+  const ampm = hour < 12 ? "AM" : "PM";
+  const hour12 = hour % 12 || 12;
+  return `${hour12}:${String(minute).padStart(2, "0")} ${ampm}`;
+}
+
 function renderBlockField(dl, key, label, kind) {
   if (kind === "plain") {
     const field = currentStructured[key];
@@ -525,10 +536,17 @@ function renderBlockField(dl, key, label, kind) {
     const raw = currentStructured[`${key}_raw`] || "";
     const status = currentStructured[`${key}_status`];
     const confirmedValue = currentStructured[key];
-    // Once resolved, show the clean resolved value (e.g. "2026-10-06" /
-    // "07:55"), not the raw dictated phrase — only an unresolved field
-    // shows its raw text, as the thing still needing to be fixed.
-    const displayValue = status === "confirmed" && confirmedValue ? confirmedValue : raw;
+    // Once resolved, show the clean resolved value (e.g. "2026-10-06" for
+    // a date, "7:55 AM" for a time — never bare 24h digits, so am/pm is
+    // always explicit on screen), not the raw dictated phrase — only an
+    // unresolved field shows its raw text, as the thing still needing to
+    // be fixed.
+    const displayValue =
+      status === "confirmed" && confirmedValue
+        ? kind === "time"
+          ? to12hAmPm(confirmedValue)
+          : confirmedValue
+        : raw;
     const input = createFieldInput(displayValue, "Not dictated — click to add", (newValue) =>
       saveDateOrTimeField(key, kind, newValue)
     );
