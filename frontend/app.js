@@ -75,13 +75,14 @@ const BLOCK_DEFS = [
     ["clinical_history", "Clinical history", "clinical"],
     ["provisional_diagnosis", "Provisional diagnosis", "clinical"],
   ]],
-  // Priority, plus the server-stamped request date/time (kind "readonly"
-  // — see field_extraction.py's _apply_request_datetime; the doctor no
-  // longer dictates these, so they're shown but never editable here).
+  // Priority, plus the request date/time — defaulted to the server's
+  // current time when not dictated (see field_extraction.py's
+  // _default_unconfirmed_datetimes), but a normal editable date/time
+  // field otherwise, same as date_collected/time_collected.
   [blockPriority, [
     ["priority", "Priority", "plain"],
-    ["date_requested", "Date requested", "readonly"],
-    ["time_requested", "Time requested", "readonly"],
+    ["date_requested", "Date requested", "date"],
+    ["time_requested", "Time requested", "time"],
   ]],
 ];
 
@@ -121,6 +122,7 @@ let formLocked = false; // set once /print-label succeeds; see applyFormLock()
 let mediaRecorder = null; // the active MediaRecorder, when recording
 let chunks = []; // audio Blob pieces collected during a recording
 let isRecording = false;
+let isContinuationRecording = false; // set in startRecording(); see mergeStructuredInto()
 
 function setStatus(msg) {
   statusEl.textContent = msg;
@@ -140,7 +142,18 @@ async function startRecording() {
   hideSpecimenGroups();
   hidePrintSection();
   closeAmbiguousPopup();
-  resetTranscriptView();
+
+  // A second recording on an in-progress (not yet printed) request is a
+  // continuation — e.g. the doctor dictating a field they missed the
+  // first time — and must ADD to what's already there, never erase it
+  // (see mergeStructuredInto, used in sendForTranscription). Only reset
+  // when there's nothing yet to continue (first-ever recording), or the
+  // previous request was already finalized (printed/locked), which is
+  // unambiguously a new patient.
+  isContinuationRecording = !!currentEntryId && !formLocked;
+  if (!isContinuationRecording) {
+    resetTranscriptView();
+  }
 
   try {
     // Ask for mic access. This prompts the user the first time. It will REJECT
@@ -187,6 +200,58 @@ function stopRecording() {
   setStatus("Uploading & transcribing…");
 }
 
+// Merges a SECOND /transcribe result into the structured data already
+// built from a prior recording — used when the doctor records again to
+// add a field they missed the first time, rather than re-dictating the
+// whole request. Anything the new recording didn't mention is left
+// exactly as it was; anything it DID mention overwrites the old value (a
+// doctor re-dictating a field is always treated as a correction).
+const _PLAIN_PASSTHROUGH_KEYS = [
+  "patient_name", "patient_id", "ward", "hospital", "specimen_type",
+  "specimen_site", "reason_for_request", "priority", "requesting_doctor",
+  "hpcsa_number", "department",
+];
+const _CLINICAL_KEYS = ["clinical_history", "provisional_diagnosis", "medication"];
+// Only present in `incoming` at all when THIS recording actually dictated
+// them — a continuation recording asks the server not to auto-default
+// date_requested/time_requested/date_collected/time_collected (see
+// is_continuation in sendForTranscription), so "present" here always
+// means "genuinely re-dictated," safe to treat as a correction.
+const _DATETIME_KEYS = ["date_of_birth", "date_requested", "time_requested", "date_collected", "time_collected"];
+
+function mergeStructuredInto(base, incoming) {
+  _PLAIN_PASSTHROUGH_KEYS.forEach((key) => {
+    if (incoming[key]) base[key] = incoming[key];
+  });
+
+  _CLINICAL_KEYS.forEach((key) => {
+    if (incoming[key]) base[key] = incoming[key];
+  });
+
+  _DATETIME_KEYS.forEach((key) => {
+    if (`${key}_status` in incoming) {
+      base[key] = incoming[key];
+      base[`${key}_status`] = incoming[`${key}_status`];
+      base[`${key}_raw`] = incoming[`${key}_raw`];
+    }
+  });
+
+  if (incoming.tests_required && incoming.tests_required.length) {
+    const existing = base.tests_required || [];
+    const existingKeys = new Set(
+      existing.map((t) => (t.normalized || t.raw || "").toLowerCase())
+    );
+    const additions = incoming.tests_required.filter(
+      (t) => !existingKeys.has((t.normalized || t.raw || "").toLowerCase())
+    );
+    base.tests_required = existing.concat(additions);
+  }
+
+  if (incoming.unparsed_text && incoming.unparsed_text.length) {
+    base.unparsed_text = (base.unparsed_text || []).concat(incoming.unparsed_text);
+  }
+}
+
 async function sendForTranscription(blob) {
   // Choose a filename extension that matches the recorded type, so the server's
   // decoder can sniff the format correctly.
@@ -196,6 +261,7 @@ async function sendForTranscription(blob) {
   // endpoint signature: transcribe(file: UploadFile = File(...)).
   const form = new FormData();
   form.append("file", blob, `recording.${ext}`);
+  if (isContinuationRecording) form.append("is_continuation", "true");
 
   try {
     const res = await backendFetch(`/transcribe`, {
@@ -209,25 +275,42 @@ async function sendForTranscription(blob) {
 
     const data = await res.json();
 
-    currentNormalizedText = data.normalized_text || data.raw_text || "";
-    currentRawText = data.raw_text || "";
-    currentStructured = data.structured || {};
+    if (isContinuationRecording) {
+      mergeStructuredInto(currentStructured, data.structured || {});
+      currentRawText = currentRawText
+        ? `${currentRawText}\n\n${data.raw_text || ""}`
+        : data.raw_text || "";
+      await rebuildNormalizedText();
+    } else {
+      currentNormalizedText = data.normalized_text || data.raw_text || "";
+      currentRawText = data.raw_text || "";
+      currentStructured = data.structured || {};
+    }
     showingRaw = false;
-    specimenConfirmCheckbox.checked = false; // a new request — any prior confirmation doesn't apply
+    specimenConfirmCheckbox.checked = false; // tests/specimens may have changed — always re-confirm
     updateTranscriptView(); // renders the six blocks + validation banner
 
-    currentEntryId = currentNormalizedText
-      ? addHistoryEntry(currentNormalizedText, currentRawText)
-      : null;
+    if (!currentEntryId) {
+      currentEntryId = currentNormalizedText
+        ? addHistoryEntry(currentNormalizedText, currentRawText)
+        : null;
+    } else {
+      updateHistoryText(currentEntryId, currentNormalizedText);
+    }
     if (currentEntryId) {
       renderTests(currentEntryId, currentStructured.tests_required || []);
-      renderSpecimenGroups(currentStructured.specimen_requirements || []);
+      if (isContinuationRecording) {
+        await refreshSpecimenRequirements(); // recomputes from the now-merged tests_required
+      } else {
+        renderSpecimenGroups(currentStructured.specimen_requirements || []);
+      }
       showPrintSection();
     }
     refreshValidation();
 
     setStatus(
-      `Done — detected ${data.language}, ${data.duration.toFixed(1)}s of audio.`
+      (isContinuationRecording ? "Added — detected " : "Done — detected ") +
+        `${data.language}, ${data.duration.toFixed(1)}s of audio.`
     );
   } catch (err) {
     console.error(err);
@@ -458,14 +541,6 @@ function renderBlockField(dl, key, label, kind) {
     if (kind === "time" && status !== "confirmed" && raw && !/[ap]\.?\s*m\.?/i.test(raw)) {
       dd.appendChild(renderAmPmQuickPick(key, raw));
     }
-    return;
-  }
-
-  if (kind === "readonly") {
-    const span = document.createElement("span");
-    span.className = "field-readonly";
-    span.textContent = currentStructured[key] || "—";
-    appendFieldRow(dl, label, span);
     return;
   }
 

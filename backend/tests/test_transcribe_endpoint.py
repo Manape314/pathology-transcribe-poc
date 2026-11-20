@@ -72,6 +72,7 @@ def test_transcribe_endpoint_raw_vs_normalized_and_structured(monkeypatch):
     # Date/time of collection are still dictation-sourced, deterministic.
     assert "2026-09-22" in normalized_text
     assert "2:40 PM" in normalized_text
+    assert "2:35 PM" in normalized_text  # time_requested, dictated
 
     structured = data["structured"]
 
@@ -79,13 +80,14 @@ def test_transcribe_endpoint_raw_vs_normalized_and_structured(monkeypatch):
     assert structured["date_of_birth_status"] == "ambiguous"
     assert structured["date_of_birth_raw"] == "1998-8-August 14th, 6 May"
 
-    # date_requested/time_requested now come from the server's own clock,
-    # not the dictated "2026-22nd September"/"25 minutes to 3 p.m." — see
-    # test_request_datetime_comes_from_server_clock_not_dictation below for
-    # the exact value/timezone check.
-    assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", structured["date_requested"])
+    # date_requested/time_requested: TRANSCRIPT dictates "Date requested,
+    # 2026-22nd September. Time requested, 25 minutes to 3 p.m." — parsed
+    # confidently, so it's kept exactly as dictated (see
+    # test_request_datetime_defaults_to_server_clock_only_when_not_dictated
+    # below for the server-clock-default path, when nothing is dictated).
+    assert structured["date_requested"] == "2026-09-22"
     assert structured["date_requested_status"] == "confirmed"
-    assert re.fullmatch(r"\d{2}:\d{2}", structured["time_requested"])
+    assert structured["time_requested"] == "14:35"
     assert structured["time_requested_status"] == "confirmed"
     assert structured["date_collected"] == "2026-09-22"
     assert structured["time_collected"] == "14:40"
@@ -112,11 +114,12 @@ def test_transcribe_endpoint_raw_vs_normalized_and_structured(monkeypatch):
     assert "As Needed (PRN)" in structured["medication"]["value"]
 
 
-def test_request_datetime_comes_from_server_clock_not_dictation(monkeypatch):
-    # End-to-end through the real /transcribe route: date_requested/
-    # time_requested must reflect the server's clock, converted to SAST,
-    # regardless of what was dictated. 22:30 UTC on 17 Nov 2026 is 00:30
-    # SAST on 18 Nov 2026 (UTC+2, no DST) — a deliberate day-rollover case.
+def test_request_datetime_defaults_to_server_clock_only_when_not_dictated(monkeypatch):
+    # End-to-end through the real /transcribe route: when the doctor never
+    # mentions "Date requested"/"Time requested"/"Date of collection"/"Time
+    # of collection" at all, the server's clock (converted to SAST) fills
+    # all four in. 22:30 UTC on 17 Nov 2026 is 00:30 SAST on 18 Nov 2026
+    # (UTC+2, no DST) — a deliberate day-rollover case.
     import field_extraction
 
     fixed_utc = datetime(2026, 11, 17, 22, 30, tzinfo=ZoneInfo("UTC"))
@@ -128,7 +131,8 @@ def test_request_datetime_comes_from_server_clock_not_dictation(monkeypatch):
 
     monkeypatch.setattr(field_extraction, "datetime", _FixedDatetime)
 
-    client = _transcribe_with(monkeypatch, TRANSCRIPT)
+    transcript = "Patient name, Jane Doe. Priority, routine."
+    client = _transcribe_with(monkeypatch, transcript)
     response = client.post(
         "/transcribe",
         files={"file": ("recording.webm", b"fake-audio-bytes", "audio/webm")},
@@ -137,16 +141,36 @@ def test_request_datetime_comes_from_server_clock_not_dictation(monkeypatch):
     assert response.status_code == 200
     structured = response.json()["structured"]
 
-    # TRANSCRIPT dictates "Date requested, 2026-22nd September. Time
-    # requested, 25 minutes to 3 p.m." — the real clock wins anyway.
     assert structured["date_requested"] == "2026-11-18"
     assert structured["date_requested_status"] == "confirmed"
     assert structured["time_requested"] == "00:30"
     assert structured["time_requested_status"] == "confirmed"
+    assert structured["date_collected"] == "2026-11-18"
+    assert structured["date_collected_status"] == "confirmed"
+    assert structured["time_collected"] == "00:30"
+    assert structured["time_collected_status"] == "confirmed"
 
-    # Specimen collection date/time are untouched by this.
-    assert structured["date_collected"] == "2026-09-22"
-    assert structured["time_collected"] == "14:40"
+
+def test_transcribe_endpoint_is_continuation_skips_datetime_defaults(monkeypatch):
+    # A continuation recording (the doctor adding a missed field on a
+    # second recording) must not have the server stamp "right now" onto
+    # date/time fields it didn't actually mention — the frontend merges
+    # this result into the first recording's, and a defaulted value here
+    # would look indistinguishable from a genuinely re-dictated one.
+    client = _transcribe_with(monkeypatch, "Specimen site, left antecubital fossa.")
+    response = client.post(
+        "/transcribe",
+        files={"file": ("recording.webm", b"fake-audio-bytes", "audio/webm")},
+        data={"is_continuation": "true"},
+    )
+
+    assert response.status_code == 200
+    structured = response.json()["structured"]
+    assert "date_requested" not in structured
+    assert "time_requested" not in structured
+    assert "date_collected" not in structured
+    assert "time_collected" not in structured
+    assert structured["specimen_site"]["value"] == "left antecubital fossa"
 
 
 def test_transcribe_endpoint_does_not_suggest_unrelated_tests_from_prose(monkeypatch):

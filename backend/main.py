@@ -44,7 +44,7 @@ import re
 import secrets
 import tempfile
 
-from fastapi import Depends, FastAPI, File, Header, HTTPException, Response, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -543,7 +543,7 @@ def rebuild_transcript_endpoint(body: RebuildTranscriptRequest):
 
 
 @app.post("/transcribe")
-async def transcribe(file: UploadFile = File(...)):
+async def transcribe(file: UploadFile = File(...), is_continuation: bool = Form(False)):
     """
     Accept a multipart/form-data upload (field name: "file"), transcribe it
     via Groq's hosted whisper-large-v3-turbo (transcription.py), and return
@@ -553,6 +553,12 @@ async def transcribe(file: UploadFile = File(...)):
     or MP4/AAC (iOS Safari) — Groq's API accepts both formats directly, so
     no conversion step is needed here; the uploaded bytes are sent through
     unchanged.
+
+    is_continuation=true means the frontend is merging this result into an
+    already-reviewed request (the doctor recording again to add a field
+    they missed) rather than starting a fresh one — see
+    field_extraction.extract_fields's apply_datetime_defaults for why that
+    changes how date/time fields are extracted.
     """
     # Preserve the original extension so Groq can sniff the format.
     suffix = os.path.splitext(file.filename or "")[1] or ".webm"
@@ -587,7 +593,9 @@ async def transcribe(file: UploadFile = File(...)):
         # already-working value of this endpoint. Falling back to the raw
         # text keeps the response at least as useful, never less.
         try:
-            structured = field_extraction.extract_fields(raw_text)
+            structured = field_extraction.extract_fields(
+                raw_text, apply_datetime_defaults=not is_continuation
+            )
         except Exception as exc:  # noqa: BLE001
             print(f"field_extraction: extract_fields failed ({exc})")
             structured = {}

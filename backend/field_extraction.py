@@ -37,10 +37,12 @@ import specimen_mapping
 from datetime_normalize import normalize_date, normalize_time
 from terminology_normalize import normalize_tests_required
 
-# Request date/time are no longer dictated — the server's own clock is
-# authoritative (see _current_sast_datetime, used at the end of
-# extract_fields()). South Africa has one timezone, no DST, so this is a
-# fixed IANA zone, not something derived from the request.
+# date_requested/time_requested/date_collected/time_collected default to
+# the server's own clock when dictation didn't already confirm a value
+# (see _default_unconfirmed_datetimes, used at the end of extract_fields())
+# — still fully editable afterward, by dictation or in the UI, like any
+# other date/time field. South Africa has one timezone, no DST, so this is
+# a fixed IANA zone, not something derived from the request.
 _SAST = ZoneInfo("Africa/Johannesburg")
 
 # (field_key, pattern matching the label phrase itself — a following
@@ -216,26 +218,78 @@ def _store_field(result: dict, field_key: str, raw_value: str) -> None:
 
     # Everything else: pure raw passthrough. No fuzzy/terminology matching
     # ever touches patient/doctor names, IDs, ward, hospital, specimen
-    # type/site, or priority.
-    result[field_key] = {"raw": raw_value, "value": raw_value, "status": "extracted"}
+    # type/site, or priority. patient_id is the one exception that gets a
+    # (non-fuzzy, non-terminology) cleanup: spoken-out digits -> numerals.
+    value = _spoken_digits_to_numerals(raw_value) if field_key == "patient_id" else raw_value
+    result[field_key] = {"raw": raw_value, "value": value, "status": "extracted"}
 
 
-def _apply_request_datetime(result: dict) -> None:
-    """Sets date_requested/time_requested to the server's current South
-    African time, always overriding whatever _store_field may already have
-    put there from dictation — the doctor is no longer required (or
-    expected) to dictate these, so the real submission-time clock is
-    authoritative regardless. Applied on every return path of
-    extract_fields(), including the empty-transcript ones, so the fields
-    are populated even when nothing was dictated at all."""
+_SPOKEN_DIGITS = {
+    "zero": "0", "oh": "0", "one": "1", "two": "2", "three": "3", "four": "4",
+    "five": "5", "six": "6", "seven": "7", "eight": "8", "nine": "9",
+}
+
+
+def _spoken_digits_to_numerals(raw_value: str) -> str:
+    """Converts individually spoken-out digits ("one zero one zero") into
+    numerals ("1010"). Whisper sometimes renders digits dictated one at a
+    time as number words instead of numerals — this is a formatting
+    quirk of the speech recognizer, not something datetime_normalize.py or
+    terminology matching is involved in. Only whole number-word tokens are
+    touched; any other token (a real letter/word in an alphanumeric ID,
+    e.g. "H123456") is left exactly as transcribed. If the result ends up
+    being nothing but digits and whitespace, the whitespace is collapsed
+    too, since a spoken ID read out digit by digit ("one zero one zero")
+    is meant to be one contiguous number ("1010"), not digits separated by
+    spaces."""
+    tokens = raw_value.split()
+    converted = [_SPOKEN_DIGITS.get(tok.lower().strip(".,"), tok) for tok in tokens]
+    result = " ".join(converted)
+    if re.fullmatch(r"[\d\s]+", result):
+        result = re.sub(r"\s+", "", result)
+    return result
+
+
+_DEFAULT_TO_NOW_FIELDS = ("date_requested", "time_requested", "date_collected", "time_collected")
+
+
+def _default_unconfirmed_datetimes(result: dict) -> None:
+    """Defaults date_requested/time_requested/date_collected/time_collected
+    to the server's current South African time, but ONLY for whichever of
+    these four fields the doctor didn't dictate AT ALL (no "_status" key
+    present). A field that WAS dictated is always left exactly as
+    datetime_normalize parsed it — confirmed values are never overridden,
+    and an ambiguous one (e.g. "10:30" with no am/pm) must keep showing its
+    raw text/ambiguous flag so the doctor can resolve it, never be silently
+    replaced by the current time. Either way, the doctor can still edit any
+    of these fields afterward in the UI. date_of_birth is deliberately
+    excluded — there's no sane "default" for a patient's date of birth."""
     now = datetime.now(_SAST)
-    result["date_requested"] = now.strftime("%Y-%m-%d")
-    result["date_requested_status"] = "confirmed"
-    result["time_requested"] = now.strftime("%H:%M")
-    result["time_requested_status"] = "confirmed"
+    now_values = {
+        "date_requested": now.strftime("%Y-%m-%d"),
+        "time_requested": now.strftime("%H:%M"),
+        "date_collected": now.strftime("%Y-%m-%d"),
+        "time_collected": now.strftime("%H:%M"),
+    }
+    for field_key in _DEFAULT_TO_NOW_FIELDS:
+        if f"{field_key}_status" in result:
+            continue
+        value = now_values[field_key]
+        result[f"{field_key}_raw"] = value
+        result[field_key] = value
+        result[f"{field_key}_status"] = "confirmed"
 
 
-def extract_fields(transcript: str) -> dict:
+def extract_fields(transcript: str, apply_datetime_defaults: bool = True) -> dict:
+    """apply_datetime_defaults=False skips _default_unconfirmed_datetimes
+    entirely, leaving date_requested/time_requested/date_collected/
+    time_collected completely absent unless THIS transcript actually
+    dictates them. Used for a continuation recording (see /transcribe's
+    is_continuation) — merging a second recording's result into an
+    already-reviewed request must never mistake "the server defaulted this
+    to right now because attempt 2 didn't mention it" for "the doctor
+    re-dictated this," which would clobber a correct value from attempt 1
+    with whatever time attempt 2 happened to be transcribed at."""
     text = (transcript or "").strip()
     result: dict = {}
     unparsed: list[str] = []
@@ -253,7 +307,8 @@ def extract_fields(transcript: str) -> dict:
     if not matches:
         unparsed.append(text)
         result["unparsed_text"] = unparsed
-        _apply_request_datetime(result)
+        if apply_datetime_defaults:
+            _default_unconfirmed_datetimes(result)
         return result
 
     leading = text[: matches[0][0]].strip(" .,:")
@@ -316,7 +371,8 @@ def extract_fields(transcript: str) -> dict:
         )
 
     result["unparsed_text"] = unparsed
-    _apply_request_datetime(result)
+    if apply_datetime_defaults:
+        _default_unconfirmed_datetimes(result)
     return result
 
 

@@ -29,13 +29,14 @@ def test_full_example_transcript():
     assert result["date_of_birth_status"] == "ambiguous"
     assert result["date_of_birth_raw"] == "1998-8-August 14th, 6 May"
 
-    # date_requested/time_requested are no longer taken from dictation —
-    # the server's own clock is authoritative regardless of what's said
-    # (see test_request_datetime_auto_populated_and_overrides_dictation
-    # for the exact value/timezone checks); just confirm the shape here.
-    assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", result["date_requested"])
+    # date_requested/time_requested: TRANSCRIPT dictates "Date requested,
+    # 2026-22nd September. Time requested, 25 minutes to 3 p.m." — dictation
+    # is confirmed, so it's kept exactly as parsed (see
+    # test_request_datetime_defaults_to_server_clock_only_when_not_dictated
+    # for the server-clock-default path).
+    assert result["date_requested"] == "2026-09-22"
     assert result["date_requested_status"] == "confirmed"
-    assert re.fullmatch(r"\d{2}:\d{2}", result["time_requested"])
+    assert result["time_requested"] == "14:35"
     assert result["time_requested_status"] == "confirmed"
 
     # Date/time COLLECTED (specimen collection) are untouched by this —
@@ -92,11 +93,10 @@ def test_build_normalized_text_substitutes_confident_values():
         in normalized_text
     )
 
-    # date_requested/time_requested now come from the server clock, not
-    # dictation — check the shape, not an exact value (see
-    # test_request_datetime_auto_populated_and_overrides_dictation).
-    assert re.search(r"Date requested: \d{4}-\d{2}-\d{2}", normalized_text)
-    assert re.search(r"Time requested: \d{1,2}:\d{2} (AM|PM)", normalized_text)
+    # date_requested/time_requested: dictation ("2026-22nd September"/"25
+    # minutes to 3 p.m.") parsed confidently, kept as-is.
+    assert "Date requested: 2026-09-22" in normalized_text
+    assert "Time requested: 2:35 PM" in normalized_text
 
     # Date/time of COLLECTION (specimen collection) are untouched by this —
     # still the dictated, deterministic substitution.
@@ -260,7 +260,7 @@ def test_transcript_with_no_recognized_labels_is_all_unparsed():
     assert result["date_requested_status"] == "confirmed"
 
 
-def test_request_datetime_auto_populated_and_overrides_dictation(monkeypatch):
+def test_request_datetime_defaults_to_server_clock_only_when_not_dictated(monkeypatch):
     # 22:30 UTC on 17 Nov 2026 is 00:30 SAST on 18 Nov 2026 (UTC+2, no DST)
     # — deliberately a day-rollover case, per the near-midnight requirement.
     fixed_utc = datetime(2026, 11, 17, 22, 30, tzinfo=ZoneInfo("UTC"))
@@ -273,11 +273,12 @@ def test_request_datetime_auto_populated_and_overrides_dictation(monkeypatch):
     monkeypatch.setattr(field_extraction, "datetime", _FixedDatetime)
 
     # TRANSCRIPT dictates "Date requested, 2026-22nd September. Time
-    # requested, 25 minutes to 3 p.m." — the real clock must win anyway.
+    # requested, 25 minutes to 3 p.m." — confirmed dictation is kept
+    # exactly as parsed, never overridden by the clock.
     result = extract_fields(TRANSCRIPT)
-    assert result["date_requested"] == "2026-11-18"
+    assert result["date_requested"] == "2026-09-22"
     assert result["date_requested_status"] == "confirmed"
-    assert result["time_requested"] == "00:30"
+    assert result["time_requested"] == "14:35"
     assert result["time_requested_status"] == "confirmed"
 
     # A truly empty transcript (no audio/silence) is a no-op — nothing is
@@ -285,11 +286,65 @@ def test_request_datetime_auto_populated_and_overrides_dictation(monkeypatch):
     empty_result = extract_fields("")
     assert "date_requested" not in empty_result
 
-    # But it's populated as soon as the doctor says ANYTHING, even if none
-    # of it matches a recognized label.
+    # But when the doctor says something and simply never mentions "Date
+    # requested"/"Time requested" at all, the server clock fills the gap.
     no_label_result = extract_fields("just some random unrelated speech")
     assert no_label_result["date_requested"] == "2026-11-18"
     assert no_label_result["time_requested"] == "00:30"
+
+
+def test_request_datetime_ambiguous_dictation_is_not_overridden(monkeypatch):
+    fixed_utc = datetime(2026, 11, 17, 22, 30, tzinfo=ZoneInfo("UTC"))
+
+    class _FixedDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed_utc.astimezone(tz) if tz else fixed_utc
+
+    monkeypatch.setattr(field_extraction, "datetime", _FixedDatetime)
+
+    # "10:30" has no am/pm — genuinely ambiguous, must stay that way (raw
+    # text preserved for the doctor to fix/confirm), never silently
+    # replaced by the current, unrelated server time.
+    result = extract_fields("Time requested, 10:30. Priority, routine.")
+    assert result["time_requested"] is None
+    assert result["time_requested_status"] == "ambiguous"
+    assert result["time_requested_raw"] == "10:30"
+
+
+def test_patient_id_spoken_digits_converted_to_numerals():
+    # Whisper sometimes renders individually-enunciated digits as number
+    # words instead of numerals — patient_id cleans that up specifically.
+    result = extract_fields("Patient ID, one zero one zero one zero. Priority, routine.")
+    assert result["patient_id"]["value"] == "101010"
+    # The original transcript text is preserved as `raw`, for audit/debug.
+    assert result["patient_id"]["raw"] == "one zero one zero one zero"
+
+
+def test_patient_id_already_numeric_or_alphanumeric_is_untouched():
+    assert extract_fields("Patient ID, 2026-00482. Priority, routine.")["patient_id"]["value"] == "2026-00482"
+    assert extract_fields("Patient ID, H123456. Priority, routine.")["patient_id"]["value"] == "H123456"
+
+
+def test_apply_datetime_defaults_false_leaves_undictated_fields_absent():
+    # Used for a continuation recording (see /transcribe's is_continuation)
+    # — merging a second recording must be able to tell "not mentioned
+    # this time" apart from "defaulted to right now," which requires the
+    # defaulting to be skippable entirely.
+    result = extract_fields("Priority, routine.", apply_datetime_defaults=False)
+    assert "date_requested" not in result
+    assert "time_requested" not in result
+    assert "date_collected" not in result
+    assert "time_collected" not in result
+
+    # A field actually dictated in THIS transcript is still extracted
+    # normally even with defaulting switched off.
+    dictated = extract_fields(
+        "Date requested, 2026-01-15. Priority, routine.", apply_datetime_defaults=False
+    )
+    assert dictated["date_requested"] == "2026-01-15"
+    assert dictated["date_requested_status"] == "confirmed"
+    assert "time_requested" not in dictated
 
 
 def test_reason_for_request_field_extracted():
